@@ -23,6 +23,9 @@
 #define MBUF_CACHE_SIZE 250
 #define BURST_SIZE 32
 
+#define TOTAL_RCV_CPU 8
+#define SRC_PORT_LIST {1, 17, 25, 9, 8, 24, 16, 3}
+
 /* basicfwd.c: Basic DPDK skeleton forwarding example. */
 
 /*
@@ -171,35 +174,52 @@ void fill_tcp_header(struct rte_tcp_hdr *tcp, int source_port, struct rte_ipv4_h
 	tcp->tcp_flags = 0x02;
 	tcp->rx_win = rte_cpu_to_be_16(0xfaf0);
 	tcp->tcp_urp = 0;
-	tcp->cksum = 0;
+    tcp->cksum = 0;
     tcp->cksum = rte_ipv4_udptcp_cksum(ip, tcp);
 }
 
-void send_tcp_packet(int port_id, int src_port, struct rte_mempool *mbuf_pool) {
-	struct rte_mbuf *pkt = rte_pktmbuf_alloc(mbuf_pool);
+int send_tcp_packet(int port_id, int number_rcv_cpus, struct rte_mempool *mbuf_pool) {
 
-	int total_header_len = sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_tcp_hdr);
-	pkt->pkt_len = total_header_len;
-	pkt->data_len = total_header_len;
+	int src_port_list[TOTAL_RCV_CPU] = SRC_PORT_LIST;
+	int src_port;
 
-	struct rte_ether_hdr *eth_hdr = rte_pktmbuf_mtod(pkt, struct rte_ether_hdr *);
-	struct rte_ipv4_hdr *ip_hdr = rte_pktmbuf_mtod_offset(pkt, struct rte_ipv4_hdr *, sizeof(struct rte_ether_hdr));
-	struct rte_tcp_hdr *tcp_hdr = rte_pktmbuf_mtod_offset(pkt, struct rte_tcp_hdr *, sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
+	struct rte_mbuf *pkt[BURST_SIZE];
 
-	fill_eth_header(eth_hdr, port_id);
+	for(int i = 0; i < BURST_SIZE; i++) {
+		pkt[i] = rte_pktmbuf_alloc(mbuf_pool);
+		if(pkt[i] == NULL) {
+			printf("Failed to allocate memory buffer for packet\n");
+			return -1;
+		}
 
-	fill_ip_header(ip_hdr, total_header_len - sizeof(struct rte_ether_hdr));
+		int total_header_len = sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_tcp_hdr);
+		pkt[i]->pkt_len = total_header_len;
+		pkt[i]->data_len = total_header_len;
 
-	fill_tcp_header(tcp_hdr, src_port, ip_hdr);
+		struct rte_ether_hdr *eth_hdr = rte_pktmbuf_mtod(pkt[i], struct rte_ether_hdr *);
+		struct rte_ipv4_hdr *ip_hdr = rte_pktmbuf_mtod_offset(pkt[i], struct rte_ipv4_hdr *, sizeof(struct rte_ether_hdr));
+		struct rte_tcp_hdr *tcp_hdr = rte_pktmbuf_mtod_offset(pkt[i], struct rte_tcp_hdr *, sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
 
-	printf("Number of packets sent: %d\n", rte_eth_tx_burst(port_id, 0, &pkt, 1));
+		fill_eth_header(eth_hdr, port_id);
+
+		fill_ip_header(ip_hdr, total_header_len - sizeof(struct rte_ether_hdr));
+
+		src_port = src_port_list[i % number_rcv_cpus];
+		//printf("%d\n", src_port_list[i % number_rcv_cpus]);
+
+		fill_tcp_header(tcp_hdr, src_port, ip_hdr);
+	}
+	printf("Number of packets sent: %d\n", rte_eth_tx_burst(port_id, 0, pkt, BURST_SIZE));
 }
 
 void packet_gen(uint16_t port_id, struct rte_mempool *mbuf_pool) {
-
-	for (;;) {
-		send_tcp_packet(port_id, 1, mbuf_pool);
-        }
+	int num_cpu;
+	printf("Number of CPUs on the rcv side: ");
+	if (scanf("%d", &num_cpu) > 0) {
+		for (;;) {
+			send_tcp_packet(port_id, num_cpu, mbuf_pool);
+        	}
+	}
 }
 
 /* >8 End Basic forwarding application lcore. */
@@ -244,14 +264,6 @@ main(int argc, char *argv[])
 		rte_exit(EXIT_FAILURE, "Cannot init port %"PRIu16 "\n",
 					portid);
 	/* >8 End of initializing all ports. */
-
-	//if (rte_lcore_count() > 1)
-	//	printf("\nWARNING: Too many lcores enabled. Only 1 used.\n");
-	//printf("\n%u\n", portid);
-
-	/* Call lcore_main on the main core only. Called on single lcore. 8< */
-	//lcore_main();
-	/* >8 End of called on single lcore. */
 
 	packet_gen(portid, mbuf_pool);
 	//test_rx(portid);
