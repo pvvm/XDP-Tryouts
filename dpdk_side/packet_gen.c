@@ -26,12 +26,16 @@
 #define TOTAL_RCV_CPU 8
 #define SRC_PORT_LIST {1, 17, 25, 9, 8, 24, 16, 3}
 
-/* basicfwd.c: Basic DPDK skeleton forwarding example. */
+#define MAX_SEND_CPU 8
 
-/*
- * Initializes a given port using global settings and with the RX buffers
- * coming from the mbuf_pool passed as a parameter.
- */
+struct packet_gen_args {
+	int num_rcv_cpus;
+	struct rte_mempool* mbuf_pool;
+	uint16_t port_id;
+};
+
+uint64_t counter_pkts[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+uint64_t previous_counter[8] = {0, 0, 0, 0, 0, 0, 0, 0};
 
 // Based on https://github.com/thewhoo/dpdk-tcp-generator/blob/master/conn.c#L103
 
@@ -40,7 +44,7 @@ static inline int
 port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 {
 	struct rte_eth_conf port_conf;
-	const uint16_t rx_rings = 1, tx_rings = 1;
+	const uint16_t rx_rings = 1, tx_rings = rte_lcore_count();
 	uint16_t nb_rxd = RX_RING_SIZE;
 	uint16_t nb_txd = TX_RING_SIZE;
 	int retval;
@@ -51,8 +55,6 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 	if (!rte_eth_dev_is_valid_port(port))
 		return -1;
 
-	//printf("Test 1 Port id %d\n", port);
-
 	memset(&port_conf, 0, sizeof(struct rte_eth_conf));
 
 	retval = rte_eth_dev_info_get(port, &dev_info);
@@ -62,24 +64,20 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 		return retval;
 	}
 
-	//printf("Test 2");
-
 	if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
 		port_conf.txmode.offloads |=
 			RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
 
-	//printf("Test 3");
 	/* Configure the Ethernet device. */
 	retval = rte_eth_dev_configure(port, rx_rings, tx_rings, &port_conf);
 	if (retval != 0)
 		return retval;
 
-	//printf("Test 4");
 	retval = rte_eth_dev_adjust_nb_rx_tx_desc(port, &nb_rxd, &nb_txd);
 	if (retval != 0)
 		return retval;
 
-	//printf("Test 5");
+
 	/* Allocate and set up 1 RX queue per Ethernet port. */
 	for (q = 0; q < rx_rings; q++) {
 		retval = rte_eth_rx_queue_setup(port, q, nb_rxd,
@@ -87,7 +85,7 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 		if (retval < 0)
 			return retval;
 	}
-	//printf("Test 6");
+
 	txconf = dev_info.default_txconf;
 	txconf.offloads = port_conf.txmode.offloads;
 	/* Allocate and set up 1 TX queue per Ethernet port. */
@@ -97,7 +95,7 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 		if (retval < 0)
 			return retval;
 	}
-	//printf("Test 7");
+
 	/* Starting Ethernet port. 8< */
 	retval = rte_eth_dev_start(port);
 	//printf("\nretval %d\n", retval);
@@ -105,7 +103,6 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 	if (retval < 0)
 		return retval;
 
-	//printf("Test 8");
 	/* Display the port MAC address. */
 	struct rte_ether_addr addr;
 	retval = rte_eth_macaddr_get(port, &addr);
@@ -132,6 +129,33 @@ void test_rx(int port) {
                	const uint16_t nb_rx = rte_eth_rx_burst(port, 0,
                		bufs, BURST_SIZE);
 		printf("%d\n", nb_rx);
+	}
+}
+
+void rate_printer() {
+	uint64_t prev_time = rte_get_timer_cycles();
+
+	rte_delay_us_sleep(1000000);
+
+	for(;;) {
+		printf("CPU0\t\tCPU1\t\tCPU2\t\tCPU3\t\tCPU4\t\tCPU5\t\tCPU6\t\tCPU7\n");
+		uint64_t curr_time = rte_get_timer_cycles();
+		double time = (curr_time - prev_time) / rte_get_timer_hz();
+		//printf("%lu %lu %lu %f\n", prev_time, curr_time, rte_get_timer_hz, time);
+
+		for(int i = 0; i < MAX_SEND_CPU; i++) {
+			uint64_t diff_pkts = counter_pkts[i] - previous_counter[i];
+			double pkt_per_sec = diff_pkts / time;
+			printf("%.2f\t", pkt_per_sec);
+			if(pkt_per_sec < 100000) printf("\t");
+			previous_counter[i] = counter_pkts[i];
+		}
+
+		printf("\n\n");
+
+		prev_time = curr_time;
+
+		rte_delay_us_sleep(1000000);
 	}
 }
 
@@ -174,8 +198,8 @@ void fill_tcp_header(struct rte_tcp_hdr *tcp, int source_port, struct rte_ipv4_h
 	tcp->tcp_flags = 0x02;
 	tcp->rx_win = rte_cpu_to_be_16(0xfaf0);
 	tcp->tcp_urp = 0;
-    tcp->cksum = 0;
-    tcp->cksum = rte_ipv4_udptcp_cksum(ip, tcp);
+    	tcp->cksum = 0;
+    	tcp->cksum = rte_ipv4_udptcp_cksum(ip, tcp);
 }
 
 int send_tcp_packet(int port_id, int number_rcv_cpus, struct rte_mempool *mbuf_pool) {
@@ -185,10 +209,11 @@ int send_tcp_packet(int port_id, int number_rcv_cpus, struct rte_mempool *mbuf_p
 
 	struct rte_mbuf *pkt[BURST_SIZE];
 
+	int lcore_id = rte_lcore_id();
 	for(int i = 0; i < BURST_SIZE; i++) {
 		pkt[i] = rte_pktmbuf_alloc(mbuf_pool);
 		if(pkt[i] == NULL) {
-			printf("Failed to allocate memory buffer for packet\n");
+			//printf("Failed to allocate memory buffer for packet\n");
 			return -1;
 		}
 
@@ -208,18 +233,25 @@ int send_tcp_packet(int port_id, int number_rcv_cpus, struct rte_mempool *mbuf_p
 		//printf("%d\n", src_port_list[i % number_rcv_cpus]);
 
 		fill_tcp_header(tcp_hdr, src_port, ip_hdr);
+
+		//printf("%d\n", total_header_len);
 	}
-	printf("Number of packets sent: %d\n", rte_eth_tx_burst(port_id, 0, pkt, BURST_SIZE));
+	int num_pkts = rte_eth_tx_burst(port_id, lcore_id, pkt, BURST_SIZE);
+	//printf("Number of packets sent: %d with core %d of length\n", num_pkts, rte_lcore_id());
+	counter_pkts[lcore_id] += num_pkts;
 }
 
-void packet_gen(uint16_t port_id, struct rte_mempool *mbuf_pool) {
-	int num_cpu;
-	printf("Number of CPUs on the rcv side: ");
-	if (scanf("%d", &num_cpu) > 0) {
-		for (;;) {
-			send_tcp_packet(port_id, num_cpu, mbuf_pool);
-        	}
-	}
+int packet_gen(void *arg) {
+	struct packet_gen_args *arguments = (struct packet_gen_args *) arg;
+	int num_cpu = arguments->num_rcv_cpus;
+	struct rte_mempool* mbuf_pool = arguments->mbuf_pool;
+	uint16_t port_id = arguments->port_id;
+
+	for (;;) {
+		send_tcp_packet(port_id, num_cpu, mbuf_pool);
+        }
+
+	return 0;
 }
 
 /* >8 End Basic forwarding application lcore. */
@@ -231,7 +263,7 @@ void packet_gen(uint16_t port_id, struct rte_mempool *mbuf_pool) {
 int
 main(int argc, char *argv[])
 {
-	struct rte_mempool *mbuf_pool;
+	//struct rte_mempool *mbuf_pool;
 	unsigned nb_ports;
 	uint16_t portid;
 
@@ -250,23 +282,52 @@ main(int argc, char *argv[])
 
 	/* Creates a new mempool in memory to hold the mbufs. */
 
-	/* Allocates mempool to hold the mbufs. 8< */
-	mbuf_pool = rte_pktmbuf_pool_create("MBUF_POOL", NUM_MBUFS * nb_ports,
-		MBUF_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+	/* Allocates mempool to hold the mbufs for each one of the cores. 8< */
+
+	int lcore_id;
+	struct rte_mempool *mbuf_pool[rte_lcore_count()];
+	RTE_LCORE_FOREACH(lcore_id) {
+		char pool_name[32];
+		snprintf(pool_name, sizeof(pool_name), "mempool_%u", lcore_id);
+		mbuf_pool[lcore_id] = rte_pktmbuf_pool_create(pool_name, NUM_MBUFS, MBUF_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+		if (mbuf_pool[lcore_id] == NULL) {
+			rte_exit(EXIT_FAILURE, "Error creating mempool for lcore %u\n", lcore_id);
+		}
+	}
+
+	//mbuf_pool = rte_pktmbuf_pool_create("MBUF_POOL", NUM_MBUFS,
+	//	MBUF_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
 	/* >8 End of allocating mempool to hold mbuf. */
 
-	if (mbuf_pool == NULL)
-		rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
+	//if (mbuf_pool == NULL)
+	//	rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
 
 	/* Initializing all ports. 8< */
 	//RTE_ETH_FOREACH_DEV(portid)
-	if (port_init(portid, mbuf_pool) != 0)
+	if (port_init(portid, mbuf_pool[0]) != 0)
 		rte_exit(EXIT_FAILURE, "Cannot init port %"PRIu16 "\n",
 					portid);
 	/* >8 End of initializing all ports. */
 
-	packet_gen(portid, mbuf_pool);
+
+	int num_cpu;
+        printf("Number of CPUs on the rcv side: ");
+        if (scanf("%d", &num_cpu) > 0) {
+		if(rte_lcore_count() > 1) {
+			RTE_LCORE_FOREACH(lcore_id) {
+				struct packet_gen_args args = {num_cpu, mbuf_pool[lcore_id], portid};
+				if(lcore_id != 0 && rte_eal_remote_launch(packet_gen, &args, lcore_id) < 0)
+					printf("Failed to launch worker thread %d\n", lcore_id);
+			}
+			rate_printer();
+		} else {
+			for(;;)
+				send_tcp_packet(portid, num_cpu, mbuf_pool[0]);
+		}
+	}
 	//test_rx(portid);
+
+	rte_eal_mp_wait_lcore();
 
 	if(rte_eth_dev_stop(portid))
 		printf("Failed while stopping device %d\n", portid);
