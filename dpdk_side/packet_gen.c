@@ -37,14 +37,13 @@ struct packet_gen_args {
 uint64_t counter_pkts[8] = {0, 0, 0, 0, 0, 0, 0, 0};
 uint64_t previous_counter[8] = {0, 0, 0, 0, 0, 0, 0, 0};
 
-// Based on https://github.com/thewhoo/dpdk-tcp-generator/blob/master/conn.c#L103
-
 /* Main functional part of port initialization. 8< */
 static inline int
 port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 {
 	struct rte_eth_conf port_conf;
-	const uint16_t rx_rings = 1, tx_rings = rte_lcore_count();
+	const uint16_t rx_rings = 1;
+	const uint16_t tx_rings = rte_lcore_count();
 	uint16_t nb_rxd = RX_RING_SIZE;
 	uint16_t nb_txd = TX_RING_SIZE;
 	int retval;
@@ -98,7 +97,7 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 
 	/* Starting Ethernet port. 8< */
 	retval = rte_eth_dev_start(port);
-	//printf("\nretval %d\n", retval);
+
 	/* >8 End of starting of ethernet port. */
 	if (retval < 0)
 		return retval;
@@ -132,22 +131,30 @@ void test_rx(int port) {
 	}
 }
 
+
+/*
+ * Prints the rate of pkt/s and counter of each core
+ */
 uint64_t rate_printer(uint64_t prev_time) {
 	uint64_t curr_time = rte_get_timer_cycles();
 	double time = (curr_time - prev_time) / rte_get_timer_hz();
-	if(time > 1) {
+	// If 1 second passed
+	if(time >= 1) {
 		for(int i = 0; i < MAX_SEND_CPU; i++) {
-            uint64_t diff_pkts = counter_pkts[i] - previous_counter[i];
-            double pkt_per_sec = diff_pkts / time;
-            printf("CPU %d\tRate: %.02f\tCounter: %lu\n", i, pkt_per_sec, counter_pkts[i]);
-            previous_counter[i] = counter_pkts[i];
-        }
+			uint64_t curr_pkt = counter_pkts[i];
+			uint64_t diff_pkts = curr_pkt - previous_counter[i];
+			double pkt_per_sec = diff_pkts / time;
+			printf("CPU %d\tRate: %.02f\tCounter: %lu\n", i, pkt_per_sec, curr_pkt);
+			previous_counter[i] = curr_pkt;
+		}
 		printf("\n\n");
 		return curr_time;
 	}
 
 	return prev_time;
 }
+
+// Based on https://github.com/thewhoo/dpdk-tcp-generator/blob/master/conn.c#L103
 
 void fill_eth_header(struct rte_ether_hdr *eth, int port_id) {
 	// Retrives MAC address of the Ethernet Device to be the source addr
@@ -162,6 +169,7 @@ void fill_eth_header(struct rte_ether_hdr *eth, int port_id) {
         }
         rte_ether_addr_copy(&mac_addr, &eth->dst_addr);
 
+	// Set type of the next header (IPv4)
 	eth->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 }
 
@@ -172,14 +180,17 @@ void fill_ip_header(struct rte_ipv4_hdr *ip, uint16_t length) {
 	ip->packet_id = 0;
 	ip->fragment_offset = rte_cpu_to_be_16(0x4000);
 	ip->time_to_live = 64;
+	// Set type of the next header (TCP)
 	ip->next_proto_id = IPPROTO_TCP;
 	ip->hdr_checksum = 0;
+	// Set src and dst addresses
 	ip->src_addr = rte_cpu_to_be_32(RTE_IPV4(10, 7, 0, 7));
 	ip->dst_addr = rte_cpu_to_be_32(RTE_IPV4(10, 7, 0, 6));
 	ip->hdr_checksum = rte_ipv4_cksum(ip);
 }
 
 void fill_tcp_header(struct rte_tcp_hdr *tcp, int source_port, struct rte_ipv4_hdr *ip) {
+	// Set src and dst ports
 	tcp->src_port = rte_cpu_to_be_16(source_port);
 	tcp->dst_port = rte_cpu_to_be_16(123);
 	tcp->sent_seq = 0;
@@ -188,17 +199,19 @@ void fill_tcp_header(struct rte_tcp_hdr *tcp, int source_port, struct rte_ipv4_h
 	tcp->tcp_flags = 0x02;
 	tcp->rx_win = rte_cpu_to_be_16(0xfaf0);
 	tcp->tcp_urp = 0;
-    tcp->cksum = 0;
-    tcp->cksum = rte_ipv4_udptcp_cksum(ip, tcp);
+    	tcp->cksum = 0;
+    	tcp->cksum = rte_ipv4_udptcp_cksum(ip, tcp);
 }
 
-int send_tcp_packet(int port_id, int number_rcv_cpus, struct rte_mempool *mbuf_pool) {
+/*
+ * Function responsible for creating and sending the packets
+ * Returns the number of packets that should be allocated in the next call
+ */
+
+int send_tcp_packet(int port_id, int num_rcv_cpus, int num_pkts_create, struct rte_mempool *mbuf_pool, struct rte_mbuf **pkt) {
 
 	int src_port_list[TOTAL_RCV_CPU] = SRC_PORT_LIST;
 	int src_port;
-
-	struct rte_mbuf *pkt[BURST_SIZE];
-
 
 	int ether_hdr_len = sizeof(struct rte_ether_hdr);
 	int ipv4_ether_hdr_len = sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr);
@@ -207,57 +220,61 @@ int send_tcp_packet(int port_id, int number_rcv_cpus, struct rte_mempool *mbuf_p
 	int lcore_id = rte_lcore_id();
 
 	int i;
-	for(i = 0; i < BURST_SIZE; i++) {
+	for(i = 0; i < num_pkts_create; i++) {
+		// Allocates a buffer for a packet
 		pkt[i] = rte_pktmbuf_alloc(mbuf_pool);
 		if(pkt[i] == NULL) {
-			//printf("Failed to allocate memory buffer for packet\n");
+			printf("Failed to allocate memory buffer for packet\n");
 			break;
 		}
 
-		pkt[i]->pkt_len = 1500;//total_header_len;
-		pkt[i]->data_len = 1500;//total_header_len;
+		pkt[i]->pkt_len = 1500;
+		pkt[i]->data_len = 1500;
 
+		// Sets pointer for the regions of the buffer where the headers are located
 		struct rte_ether_hdr *eth_hdr = rte_pktmbuf_mtod(pkt[i], struct rte_ether_hdr *);
 		struct rte_ipv4_hdr *ip_hdr = rte_pktmbuf_mtod_offset(pkt[i], struct rte_ipv4_hdr *, ether_hdr_len);
 		struct rte_tcp_hdr *tcp_hdr = rte_pktmbuf_mtod_offset(pkt[i], struct rte_tcp_hdr *, ipv4_ether_hdr_len);
 
+		src_port = src_port_list[i % num_rcv_cpus];
+
+		// Fills each one of the headers
 		fill_eth_header(eth_hdr, port_id);
-
 		fill_ip_header(ip_hdr, total_header_len - ether_hdr_len);
-
-		src_port = src_port_list[i % number_rcv_cpus];
-
-		/*if(lcore_id == 0)
-			src_port = 1;
-		else if (lcore_id == 1)
-			src_port = 17;
-		else if (lcore_id == 2)
-			src_port = 25;
-		else if (lcore_id == 3)
-			src_port = 9;*/
-
 		fill_tcp_header(tcp_hdr, src_port, ip_hdr);
 	}
-	int num_pkts = rte_eth_tx_burst(port_id, lcore_id, pkt, i);
-	//printf("Number of packets sent: %d with core %d of length\n", num_pkts, rte_lcore_id());
+
+	// Pushes the array of packets to the transmission queue, returning the number of pushed packets
+	int num_pkts = rte_eth_tx_burst(port_id, lcore_id, pkt, BURST_SIZE);
+
 	counter_pkts[lcore_id] += num_pkts;
 
-	if(unlikely(num_pkts < i)) {
+	// Alternative solution. We free the packets that weren't sent
+	/*if(unlikely(num_pkts < i)) {
 		while(num_pkts < i) {
 			rte_pktmbuf_free(pkt[num_pkts]);
 			num_pkts++;
 		}
-	}
+	}*/
+
+	// Returns the number of packets that should be allocated in the next call, so we don't need to free the unsent
+	return num_pkts;
 }
 
+/*
+ * This function is called for each one of the helper threads
+ * It sets the arguments for the send_tcp_packet function call and loops
+ */
 int packet_gen(void *arg) {
 	struct packet_gen_args *arguments = (struct packet_gen_args *) arg;
 	int num_cpu = arguments->num_rcv_cpus;
 	struct rte_mempool* mbuf_pool = arguments->mbuf_pool;
 	uint16_t port_id = arguments->port_id;
+	int num_pkt_create = BURST_SIZE;
 
+	struct rte_mbuf *pkt[BURST_SIZE];
 	for (;;) {
-		send_tcp_packet(port_id, num_cpu, mbuf_pool);
+		num_pkt_create = send_tcp_packet(port_id, num_cpu, num_pkt_create, mbuf_pool, pkt);
         }
 
 	return 0;
@@ -285,9 +302,8 @@ main(int argc, char *argv[])
 	argc -= ret;
 	argv += ret;
 
-	/* Check that there is an even number of ports to send/receive on. */
+	/* Check the number of ports to send on. */
 	nb_ports = rte_eth_dev_count_avail();
-	//printf("\n%d\n", nb_ports);
 
 	/* Creates a new mempool in memory to hold the mbufs. */
 
@@ -315,15 +331,19 @@ main(int argc, char *argv[])
 	int num_cpu;
         printf("Number of CPUs on the rcv side: ");
         if (scanf("%d", &num_cpu) > 0) {
+		/* Initializes execution of threads that generate packets in other cores */
 		RTE_LCORE_FOREACH(lcore_id) {
 			struct packet_gen_args args = {num_cpu, mbuf_pool[lcore_id], portid};
 			if(lcore_id != 0 && rte_eal_remote_launch(packet_gen, &args, lcore_id) < 0)
 				printf("Failed to launch worker thread %d\n", lcore_id);
 		}
+		/* The main thread prints the rate and generates packets */
 		if(rte_lcore_id() == 0) {
+			struct rte_mbuf *pkt[BURST_SIZE];
+			int num_pkt_create = BURST_SIZE;
 			for(;;) {
 				time = rate_printer(time);
-				send_tcp_packet(portid, num_cpu, mbuf_pool[0]);
+				num_pkt_create = send_tcp_packet(portid, num_cpu, num_pkt_create, mbuf_pool[0], pkt);
 			}
 		}
 	}
