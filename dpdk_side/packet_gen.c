@@ -17,9 +17,9 @@
 #include <rte_tcp.h>
 
 #define RX_RING_SIZE 1024
-#define TX_RING_SIZE 1024
+#define TX_RING_SIZE 2048
 
-#define NUM_MBUFS 8191
+#define NUM_MBUFS 8191 //16383
 #define MBUF_CACHE_SIZE 250
 #define BURST_SIZE 32
 
@@ -132,31 +132,21 @@ void test_rx(int port) {
 	}
 }
 
-void rate_printer() {
-	uint64_t prev_time = rte_get_timer_cycles();
-
-	rte_delay_us_sleep(1000000);
-
-	for(;;) {
-		printf("CPU0\t\tCPU1\t\tCPU2\t\tCPU3\t\tCPU4\t\tCPU5\t\tCPU6\t\tCPU7\n");
-		uint64_t curr_time = rte_get_timer_cycles();
-		double time = (curr_time - prev_time) / rte_get_timer_hz();
-		//printf("%lu %lu %lu %f\n", prev_time, curr_time, rte_get_timer_hz, time);
-
+uint64_t rate_printer(uint64_t prev_time) {
+	uint64_t curr_time = rte_get_timer_cycles();
+	double time = (curr_time - prev_time) / rte_get_timer_hz();
+	if(time > 1) {
 		for(int i = 0; i < MAX_SEND_CPU; i++) {
-			uint64_t diff_pkts = counter_pkts[i] - previous_counter[i];
-			double pkt_per_sec = diff_pkts / time;
-			printf("%.2f\t", pkt_per_sec);
-			if(pkt_per_sec < 100000) printf("\t");
-			previous_counter[i] = counter_pkts[i];
-		}
-
+            uint64_t diff_pkts = counter_pkts[i] - previous_counter[i];
+            double pkt_per_sec = diff_pkts / time;
+            printf("CPU %d\tRate: %.02f\tCounter: %lu\n", i, pkt_per_sec, counter_pkts[i]);
+            previous_counter[i] = counter_pkts[i];
+        }
 		printf("\n\n");
-
-		prev_time = curr_time;
-
-		rte_delay_us_sleep(1000000);
+		return curr_time;
 	}
+
+	return prev_time;
 }
 
 void fill_eth_header(struct rte_ether_hdr *eth, int port_id) {
@@ -198,8 +188,8 @@ void fill_tcp_header(struct rte_tcp_hdr *tcp, int source_port, struct rte_ipv4_h
 	tcp->tcp_flags = 0x02;
 	tcp->rx_win = rte_cpu_to_be_16(0xfaf0);
 	tcp->tcp_urp = 0;
-    	tcp->cksum = 0;
-    	tcp->cksum = rte_ipv4_udptcp_cksum(ip, tcp);
+    tcp->cksum = 0;
+    tcp->cksum = rte_ipv4_udptcp_cksum(ip, tcp);
 }
 
 int send_tcp_packet(int port_id, int number_rcv_cpus, struct rte_mempool *mbuf_pool) {
@@ -209,36 +199,55 @@ int send_tcp_packet(int port_id, int number_rcv_cpus, struct rte_mempool *mbuf_p
 
 	struct rte_mbuf *pkt[BURST_SIZE];
 
+
+	int ether_hdr_len = sizeof(struct rte_ether_hdr);
+	int ipv4_ether_hdr_len = sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr);
+	int total_header_len = sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_tcp_hdr);
+
 	int lcore_id = rte_lcore_id();
-	for(int i = 0; i < BURST_SIZE; i++) {
+
+	int i;
+	for(i = 0; i < BURST_SIZE; i++) {
 		pkt[i] = rte_pktmbuf_alloc(mbuf_pool);
 		if(pkt[i] == NULL) {
 			//printf("Failed to allocate memory buffer for packet\n");
-			return -1;
+			break;
 		}
 
-		int total_header_len = sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_tcp_hdr);
-		pkt[i]->pkt_len = total_header_len;
-		pkt[i]->data_len = total_header_len;
+		pkt[i]->pkt_len = 1500;//total_header_len;
+		pkt[i]->data_len = 1500;//total_header_len;
 
 		struct rte_ether_hdr *eth_hdr = rte_pktmbuf_mtod(pkt[i], struct rte_ether_hdr *);
-		struct rte_ipv4_hdr *ip_hdr = rte_pktmbuf_mtod_offset(pkt[i], struct rte_ipv4_hdr *, sizeof(struct rte_ether_hdr));
-		struct rte_tcp_hdr *tcp_hdr = rte_pktmbuf_mtod_offset(pkt[i], struct rte_tcp_hdr *, sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
+		struct rte_ipv4_hdr *ip_hdr = rte_pktmbuf_mtod_offset(pkt[i], struct rte_ipv4_hdr *, ether_hdr_len);
+		struct rte_tcp_hdr *tcp_hdr = rte_pktmbuf_mtod_offset(pkt[i], struct rte_tcp_hdr *, ipv4_ether_hdr_len);
 
 		fill_eth_header(eth_hdr, port_id);
 
-		fill_ip_header(ip_hdr, total_header_len - sizeof(struct rte_ether_hdr));
+		fill_ip_header(ip_hdr, total_header_len - ether_hdr_len);
 
 		src_port = src_port_list[i % number_rcv_cpus];
-		//printf("%d\n", src_port_list[i % number_rcv_cpus]);
+
+		/*if(lcore_id == 0)
+			src_port = 1;
+		else if (lcore_id == 1)
+			src_port = 17;
+		else if (lcore_id == 2)
+			src_port = 25;
+		else if (lcore_id == 3)
+			src_port = 9;*/
 
 		fill_tcp_header(tcp_hdr, src_port, ip_hdr);
-
-		//printf("%d\n", total_header_len);
 	}
-	int num_pkts = rte_eth_tx_burst(port_id, lcore_id, pkt, BURST_SIZE);
+	int num_pkts = rte_eth_tx_burst(port_id, lcore_id, pkt, i);
 	//printf("Number of packets sent: %d with core %d of length\n", num_pkts, rte_lcore_id());
 	counter_pkts[lcore_id] += num_pkts;
+
+	if(unlikely(num_pkts < i)) {
+		while(num_pkts < i) {
+			rte_pktmbuf_free(pkt[num_pkts]);
+			num_pkts++;
+		}
+	}
 }
 
 int packet_gen(void *arg) {
@@ -295,13 +304,6 @@ main(int argc, char *argv[])
 		}
 	}
 
-	//mbuf_pool = rte_pktmbuf_pool_create("MBUF_POOL", NUM_MBUFS,
-	//	MBUF_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
-	/* >8 End of allocating mempool to hold mbuf. */
-
-	//if (mbuf_pool == NULL)
-	//	rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
-
 	/* Initializing all ports. 8< */
 	//RTE_ETH_FOREACH_DEV(portid)
 	if (port_init(portid, mbuf_pool[0]) != 0)
@@ -309,20 +311,20 @@ main(int argc, char *argv[])
 					portid);
 	/* >8 End of initializing all ports. */
 
-
+	uint64_t time = rte_get_timer_cycles();
 	int num_cpu;
         printf("Number of CPUs on the rcv side: ");
         if (scanf("%d", &num_cpu) > 0) {
-		if(rte_lcore_count() > 1) {
-			RTE_LCORE_FOREACH(lcore_id) {
-				struct packet_gen_args args = {num_cpu, mbuf_pool[lcore_id], portid};
-				if(lcore_id != 0 && rte_eal_remote_launch(packet_gen, &args, lcore_id) < 0)
-					printf("Failed to launch worker thread %d\n", lcore_id);
-			}
-			rate_printer();
-		} else {
-			for(;;)
+		RTE_LCORE_FOREACH(lcore_id) {
+			struct packet_gen_args args = {num_cpu, mbuf_pool[lcore_id], portid};
+			if(lcore_id != 0 && rte_eal_remote_launch(packet_gen, &args, lcore_id) < 0)
+				printf("Failed to launch worker thread %d\n", lcore_id);
+		}
+		if(rte_lcore_id() == 0) {
+			for(;;) {
+				time = rate_printer(time);
 				send_tcp_packet(portid, num_cpu, mbuf_pool[0]);
+			}
 		}
 	}
 	//test_rx(portid);
