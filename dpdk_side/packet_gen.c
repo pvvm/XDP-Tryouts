@@ -29,6 +29,7 @@
 #define MAX_SEND_CPU 8
 
 #define LIMIT_PACKETS 100000000
+#define PKT_LENGTH 1500
 
 struct packet_gen_args {
 	int num_rcv_cpus;
@@ -143,6 +144,7 @@ uint64_t rate_printer(uint64_t prev_time) {
 	double time = (curr_time - prev_time) / rte_get_timer_hz();
 
 	uint64_t pkts_sum = 0;
+	double total_pkt_ps = 0;
 	// If 1 second passed
 	if(time >= 1) {
 		for(int i = 0; i < MAX_SEND_CPU; i++) {
@@ -153,7 +155,10 @@ uint64_t rate_printer(uint64_t prev_time) {
 			previous_counter[i] = curr_pkt;
 
 			pkts_sum += curr_pkt;
+			total_pkt_ps += pkt_per_sec;
 		}
+		double gbps_rate = total_pkt_ps * PKT_LENGTH * 8 / 1000000000;
+		printf("\nTotal\t%.02fpkt/s\t%.02fGbps\n", total_pkt_ps, gbps_rate);
 		printf("\n\n");
 
 		if(pkts_sum > LIMIT_PACKETS)
@@ -238,8 +243,8 @@ int send_tcp_packet(int port_id, int num_rcv_cpus, int num_pkts_create, struct r
 			break;
 		}
 
-		pkt[i]->pkt_len = 1500;
-		pkt[i]->data_len = 1500;
+		pkt[i]->pkt_len = PKT_LENGTH;
+		pkt[i]->data_len = PKT_LENGTH;
 
 		// Sets pointer for the regions of the buffer where the headers are located
 		struct rte_ether_hdr *eth_hdr = rte_pktmbuf_mtod(pkt[i], struct rte_ether_hdr *);
@@ -256,6 +261,8 @@ int send_tcp_packet(int port_id, int num_rcv_cpus, int num_pkts_create, struct r
 
 	// Pushes the array of packets to the transmission queue, returning the number of pushed packets
 	int num_pkts = rte_eth_tx_burst(port_id, lcore_id, pkt, BURST_SIZE);
+
+	//printf("%d ", num_pkts);
 
 	counter_pkts[lcore_id] += num_pkts;
 
@@ -316,6 +323,7 @@ main(int argc, char *argv[])
 
 	/* Check the number of ports to send on. */
 	nb_ports = rte_eth_dev_count_avail();
+	printf("Number of ports available: %d\n", nb_ports);
 
 	/* Creates a new mempool in memory to hold the mbufs. */
 
