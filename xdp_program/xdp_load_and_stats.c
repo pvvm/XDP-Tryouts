@@ -31,7 +31,7 @@ static const char *default_filename = "xdp_prog_kern.o";
 // "percpu_array_lookup"
 // "common_array_lookup_same_keys"
 // "simply_drop"
-static const char *default_progname = "simply_drop";
+static const char *default_progname = "percpu_array_lookup";
 
 
 static const struct option_wrapper long_options[] = {
@@ -229,6 +229,17 @@ int main(int argc, char **argv)
 		       info.type, info.id, info.name,
 		       info.key_size, info.value_size, info.max_entries
 		       );
+	}
+
+	for(;;) {
+		int total_pkts = 0;
+		for(int key = 0; key < MAX_NUMBER_CORES; key++) {
+			bpf_map_lookup_elem(counter_map_fd, &key, &value);
+			printf("CPU %d\tNumber of packets: %d\n", key, value);
+			total_pkts += value;
+		}
+		printf("\nTotal sum: %d\n\n", total_pkts);
+		sleep(1);
 	}
 
 	return EXIT_OK;

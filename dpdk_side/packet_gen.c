@@ -28,6 +28,8 @@
 
 #define MAX_SEND_CPU 8
 
+#define LIMIT_PACKETS 100000000
+
 struct packet_gen_args {
 	int num_rcv_cpus;
 	struct rte_mempool* mbuf_pool;
@@ -36,6 +38,7 @@ struct packet_gen_args {
 
 uint64_t counter_pkts[8] = {0, 0, 0, 0, 0, 0, 0, 0};
 uint64_t previous_counter[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+bool stop_flag = 0;
 
 /* Main functional part of port initialization. 8< */
 static inline int
@@ -138,6 +141,8 @@ void test_rx(int port) {
 uint64_t rate_printer(uint64_t prev_time) {
 	uint64_t curr_time = rte_get_timer_cycles();
 	double time = (curr_time - prev_time) / rte_get_timer_hz();
+
+	uint64_t pkts_sum = 0;
 	// If 1 second passed
 	if(time >= 1) {
 		for(int i = 0; i < MAX_SEND_CPU; i++) {
@@ -146,8 +151,13 @@ uint64_t rate_printer(uint64_t prev_time) {
 			double pkt_per_sec = diff_pkts / time;
 			printf("CPU %d\tRate: %.02f\tCounter: %lu\n", i, pkt_per_sec, curr_pkt);
 			previous_counter[i] = curr_pkt;
+
+			pkts_sum += curr_pkt;
 		}
 		printf("\n\n");
+
+		if(pkts_sum > LIMIT_PACKETS)
+			stop_flag = 1;
 		return curr_time;
 	}
 
@@ -274,6 +284,8 @@ int packet_gen(void *arg) {
 
 	struct rte_mbuf *pkt[BURST_SIZE];
 	for (;;) {
+		if(stop_flag)
+			break;
 		num_pkt_create = send_tcp_packet(port_id, num_cpu, num_pkt_create, mbuf_pool, pkt);
         }
 
@@ -342,6 +354,8 @@ main(int argc, char *argv[])
 			struct rte_mbuf *pkt[BURST_SIZE];
 			int num_pkt_create = BURST_SIZE;
 			for(;;) {
+				if(stop_flag)
+					break;
 				time = rate_printer(time);
 				num_pkt_create = send_tcp_packet(portid, num_cpu, num_pkt_create, mbuf_pool[0], pkt);
 			}
@@ -356,6 +370,11 @@ main(int argc, char *argv[])
 
 	if(rte_eth_dev_close(portid))
 		printf("Failed while closing device %d\n", portid);
+
+	uint64_t sum_packets;
+	for(int i = 0; i < MAX_SEND_CPU; i++)
+		sum_packets += counter_pkts[i];
+	printf("\nTotal number of packets: %lu\n\n", sum_packets);
 
 	/* clean up the EAL */
 	rte_eal_cleanup();
