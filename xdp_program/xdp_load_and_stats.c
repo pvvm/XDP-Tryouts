@@ -31,7 +31,7 @@ static const char *default_filename = "xdp_prog_kern.o";
 // "percpu_array_lookup"
 // "common_array_lookup_same_keys"
 // "simply_drop"
-static const char *default_progname = "percpu_array_lookup";
+static const char *default_progname = "common_array_lookup_diff_keys";
 
 
 static const struct option_wrapper long_options[] = {
@@ -142,6 +142,7 @@ int main(int argc, char **argv)
 	int common_map_fd;
 	int percpu_map_fd;
 	int counter_map_fd;
+	int time_map_fd;
 	char errmsg[1024];
 	int err;
 
@@ -206,11 +207,17 @@ int main(int argc, char **argv)
 		return EXIT_FAIL_BPF;
 	}
 
+	time_map_fd = find_map_fd(xdp_program__bpf_obj(program), "time_array");
+	if (counter_map_fd < 0) {
+		return EXIT_FAIL_BPF;
+	}
+
 	int value = 0;
 	for(int key = 0; key < MAX_NUMBER_CORES; key++) {
 		bpf_map_update_elem(common_map_fd, &key, &value, BPF_ANY);
 		bpf_map_update_elem(percpu_map_fd, &key, &value, BPF_ANY);
 		bpf_map_update_elem(counter_map_fd, &key, &value, BPF_ANY);
+		bpf_map_update_elem(time_map_fd, &key, &value, BPF_ANY);
 	}
 
 	/* Lesson#4: check map info, e.g. datarec is expected size */
@@ -231,14 +238,27 @@ int main(int argc, char **argv)
 		       );
 	}
 
+	unsigned long int diff_time;
+	double curr_time;
 	for(;;) {
-		int total_pkts = 0;
+		int total_pkts = 0, num_cores = MAX_NUMBER_CORES;
+		double sum_times = 0;
 		for(int key = 0; key < MAX_NUMBER_CORES; key++) {
 			bpf_map_lookup_elem(counter_map_fd, &key, &value);
-			printf("CPU %d\tNumber of packets: %d\n", key, value);
+			bpf_map_lookup_elem(time_map_fd, &key, &diff_time);
+			if(value != 0)
+				curr_time = diff_time / value;
+			else {
+				curr_time = 0;
+				num_cores--;
+			}
+			printf("CPU %d\t# packets: %d\tProcessing time: %.02f ns\n", key, value, curr_time);
 			total_pkts += value;
+			sum_times += curr_time;
 		}
-		printf("\nTotal sum: %d\n\n", total_pkts);
+		if(num_cores == 0)
+			num_cores = 1;
+		printf("\nTotal packets: %d\tAverage processing time: %.02lf ns\n\n", total_pkts, sum_times / num_cores);
 		sleep(1);
 	}
 
