@@ -10,7 +10,24 @@
 
 #include "../common/parsing_helpers.h"
 
-#define MAX_NUMBER_CORES 12
+#define MAX_NUMBER_CORES 8
+
+struct inner_map {
+    __uint(type, BPF_MAP_TYPE_QUEUE);
+    __type(value, __u32);
+    __uint(max_entries, 32);
+} inner_map0 SEC(".maps"), inner_map1 SEC(".maps"), inner_map2 SEC(".maps"), inner_map3 SEC(".maps"),
+inner_map4 SEC(".maps"), inner_map5 SEC(".maps"), inner_map6 SEC(".maps"), inner_map7 SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
+    __uint(max_entries, MAX_NUMBER_CORES);
+    __type(key, __u32);
+    __array(values, struct inner_map);
+} outer_map SEC(".maps") = {
+    .values = {&inner_map0, &inner_map1, &inner_map2, &inner_map3,
+    &inner_map4, &inner_map5, &inner_map6, &inner_map7}
+};
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
@@ -119,15 +136,12 @@ struct {
 static __always_inline int update_counter (int key_cpu) {
     unsigned int * value = bpf_map_lookup_elem(&counter_array, &key_cpu);
     if(!value)
-        return 0;
-
-    //if(*value % 100 == 0)
-    //    bpf_printk("\nCurrent cpu: %d\nCounter: %d", key_cpu, *value);
+        return -1;
 
     int new_value = (* value) + 1;
     bpf_map_update_elem(&counter_array, &key_cpu, &new_value, BPF_ANY);
 
-    return 1;
+    return new_value;
 }
 
 static __always_inline int update_time (__u64 arrival_time, __u64 finish_time, int key_cpu) {
@@ -149,8 +163,8 @@ static __always_inline int lookup_map (int key, void * map_pointer) {
 
     //bpf_printk("\nCurrent key: %d\nValue: %d", key, *value);
 
-    //int new_value = (* value) + 1;
-    //bpf_map_update_elem(map_pointer, &key, &new_value, BPF_ANY);
+    int new_value = (* value) + 1;
+    bpf_map_update_elem(map_pointer, &key, &new_value, BPF_ANY);
 
     return 1;
 }
@@ -158,8 +172,6 @@ static __always_inline int lookup_map (int key, void * map_pointer) {
 SEC("xdp")
 int  common_array_lookup_diff_keys(struct xdp_md *ctx)
 {
-    __u64 arrival_time = bpf_ktime_get_ns();
-
     int cpu = bpf_get_smp_processor_id();
 
     // Update counter map
@@ -167,8 +179,11 @@ int  common_array_lookup_diff_keys(struct xdp_md *ctx)
         bpf_printk("Error while looking up counter map");
     }
 
+    __u64 arrival_time = bpf_ktime_get_ns();
+
     // Lookup common map
-    lookup_map(cpu, &common_array);
+    //for(int i = 0; i < 100; i++)
+        lookup_map(cpu, &common_array);
 
     __u64 finish_time = bpf_ktime_get_ns();
     if(!update_time(arrival_time, finish_time, cpu)) {
@@ -181,8 +196,6 @@ int  common_array_lookup_diff_keys(struct xdp_md *ctx)
 SEC("xdp")
 int  percpu_array_lookup(struct xdp_md *ctx)
 {
-    __u64 arrival_time = bpf_ktime_get_ns();
-
     int cpu = bpf_get_smp_processor_id();
 
     // Update counter map
@@ -190,8 +203,11 @@ int  percpu_array_lookup(struct xdp_md *ctx)
         bpf_printk("Error while looking up counter map");
     }
 
-    // Lookup common map
-    lookup_map(0, &percpu_array);
+    __u64 arrival_time = bpf_ktime_get_ns();
+
+    // Lookup percpu map
+    for(int i = 0; i < 100; i++)
+        lookup_map(0, &percpu_array);
 
     __u64 finish_time = bpf_ktime_get_ns();
     if(!update_time(arrival_time, finish_time, cpu)) {
@@ -204,21 +220,22 @@ int  percpu_array_lookup(struct xdp_md *ctx)
 SEC("xdp")
 int  common_array_lookup_same_keys(struct xdp_md *ctx)
 {
-    __u64 arrival_time = bpf_ktime_get_ns();
-
     int cpu = bpf_get_smp_processor_id();
 
     // Update counter map
     if(!update_counter(cpu)) {
-        bpf_printk("Error while looking up counter map");
+        bpf_printk("Error while looking up counter map\n");
     }
 
+    __u64 arrival_time = bpf_ktime_get_ns();
+
     // Lookup common map
-    lookup_map(0, &common_array);
+    //for(int i = 0; i < 100; i++)
+        lookup_map(0, &common_array);
 
     __u64 finish_time = bpf_ktime_get_ns();
     if(!update_time(arrival_time, finish_time, cpu)) {
-        bpf_printk("Error while looking up timer map");
+        bpf_printk("Error while looking up timer map\n");
     }
 
     return XDP_DROP;
@@ -228,7 +245,6 @@ int  common_array_lookup_same_keys(struct xdp_md *ctx)
 SEC("xdp")
 int  simply_drop(struct xdp_md *ctx)
 {
-    __u64 arrival_time = bpf_ktime_get_ns();
 
     int cpu = bpf_get_smp_processor_id();
 
@@ -238,16 +254,66 @@ int  simply_drop(struct xdp_md *ctx)
 
     // Update counter map
     if(!update_counter(cpu)) {
-        bpf_printk("Error while looking up counter map");
+        bpf_printk("Error while looking up counter map\n");
     }
 
     //bpf_printk("\n%lu\n", arrival_time);
 
     //parse_packet(ctx);
 
+    __u64 arrival_time = bpf_ktime_get_ns();
+
     __u64 finish_time = bpf_ktime_get_ns();
     if(!update_time(arrival_time, finish_time, cpu)) {
-        bpf_printk("Error while looking up timer map");
+        bpf_printk("Error while looking up timer map\n");
+    }
+
+    return XDP_DROP;
+}
+
+static __always_inline int lookup_map_of_maps (int key, int counter) {
+    struct inner_map *map = bpf_map_lookup_elem(&outer_map, &key);
+
+    if(!map) {
+        bpf_printk("Error while accessing map of maps\n");
+        return -1;
+    }
+
+    int check_value = -1;
+    if(counter > 32) {
+        bpf_map_pop_elem(map, &check_value);
+
+        if(check_value != counter - 32) {
+            counter = -1;
+            //bpf_printk("The queue missed counter %d", check_value + 32);
+        }
+    }
+    
+    if(bpf_map_push_elem(map, &counter, BPF_EXIST) < 0) {
+        bpf_printk("Error while accessing pushing element to queue\n");
+    }
+
+    return 1;
+}
+
+SEC("xdp")
+int  map_of_maps(struct xdp_md *ctx)
+{
+    int cpu = bpf_get_smp_processor_id();
+
+    // Update counter map
+    int counter = update_counter(cpu);
+    if(counter < 0) {
+        bpf_printk("Error while looking up counter map\n");
+    }
+
+    __u64 arrival_time = bpf_ktime_get_ns();
+
+    lookup_map_of_maps(cpu, counter);
+
+    __u64 finish_time = bpf_ktime_get_ns();
+    if(!update_time(arrival_time, finish_time, cpu)) {
+        bpf_printk("Error while looking up timer map\n");
     }
 
     return XDP_DROP;

@@ -126,20 +126,29 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 /* >8 End of main functional part of port initialization. */
 
 void test_rx(int port) {
-	for(;;) {
-		rte_delay_us_sleep(1000000);
+	//for(;;) {
+		//rte_delay_us_sleep(1000000);
 		struct rte_mbuf *bufs[BURST_SIZE];
                	const uint16_t nb_rx = rte_eth_rx_burst(port, 0,
                		bufs, BURST_SIZE);
-		printf("%d\n", nb_rx);
-	}
+		printf("%d", nb_rx);
+	//}
 }
 
+
+void check_stop() {
+	uint64_t pkt_total = 0;
+	for(int i = 0; i < MAX_SEND_CPU; i++) {
+		pkt_total += counter_pkts[i];
+	}
+	if(pkt_total >= LIMIT_PACKETS)
+		stop_flag = 1;
+}
 
 /*
  * Prints the rate of pkt/s and counter of each core
  */
-uint64_t rate_printer(uint64_t prev_time) {
+uint64_t rate_printer(uint64_t prev_time, double * rate_sum, int * iter_counter) {
 	uint64_t curr_time = rte_get_timer_cycles();
 	double time = (curr_time - prev_time) / rte_get_timer_hz();
 
@@ -154,15 +163,15 @@ uint64_t rate_printer(uint64_t prev_time) {
 			printf("CPU %d\tRate: %.02f\tCounter: %lu\n", i, pkt_per_sec, curr_pkt);
 			previous_counter[i] = curr_pkt;
 
-			pkts_sum += curr_pkt;
 			total_pkt_ps += pkt_per_sec;
 		}
 		double gbps_rate = total_pkt_ps * PKT_LENGTH * 8 / 1000000000;
 		printf("\nTotal\t%.02fpkt/s\t%.02fGbps\n", total_pkt_ps, gbps_rate);
 		printf("\n\n");
 
-		if(pkts_sum > LIMIT_PACKETS)
-			stop_flag = 1;
+		*rate_sum += gbps_rate;
+		*iter_counter += 1;
+
 		return curr_time;
 	}
 
@@ -347,6 +356,9 @@ main(int argc, char *argv[])
 					portid);
 	/* >8 End of initializing all ports. */
 
+	int iter_counter = 0;
+	double rate_sum = 0;
+
 	uint64_t time = rte_get_timer_cycles();
 	int num_cpu;
         printf("Number of CPUs on the rcv side: ");
@@ -362,9 +374,10 @@ main(int argc, char *argv[])
 			struct rte_mbuf *pkt[BURST_SIZE];
 			int num_pkt_create = BURST_SIZE;
 			for(;;) {
+				check_stop();
 				if(stop_flag)
 					break;
-				time = rate_printer(time);
+				time = rate_printer(time, &rate_sum, &iter_counter);
 				num_pkt_create = send_tcp_packet(portid, num_cpu, num_pkt_create, mbuf_pool[0], pkt);
 			}
 		}
@@ -382,7 +395,7 @@ main(int argc, char *argv[])
 	uint64_t sum_packets;
 	for(int i = 0; i < MAX_SEND_CPU; i++)
 		sum_packets += counter_pkts[i];
-	printf("\nTotal number of packets: %lu\n\n", sum_packets);
+	printf("\nTotal # of packets: %lu\tAverage rate: %.02f Gbps\n\n", sum_packets, rate_sum / (double) iter_counter);
 
 	/* clean up the EAL */
 	rte_eal_cleanup();

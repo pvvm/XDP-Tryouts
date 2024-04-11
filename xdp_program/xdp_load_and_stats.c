@@ -23,15 +23,16 @@ static const char *__doc__ = "XDP loader and stats program\n"
 #include "../common/common_params.h"
 #include "../common/common_user_bpf_xdp.h"
 
-#define MAX_NUMBER_CORES 12
+#define MAX_NUMBER_CORES 8
 
 static const char *default_filename = "xdp_prog_kern.o";
 
+// "map_of_maps"
 // "common_array_lookup_diff_keys"
 // "percpu_array_lookup"
 // "common_array_lookup_same_keys"
 // "simply_drop"
-static const char *default_progname = "common_array_lookup_diff_keys";
+static const char *default_progname = "percpu_array_lookup";
 
 
 static const struct option_wrapper long_options[] = {
@@ -134,11 +135,159 @@ static int __check_map_fd_info(int map_fd, struct bpf_map_info *info,
 	return 0;
 }
 
+void map_rate_printer(int counter_map_fd, int time_map_fd) {
+	unsigned long int diff_latency;
+	double curr_latency;
+	unsigned long int last_latency[MAX_NUMBER_CORES] = {0, 0, 0, 0, 0, 0, 0, 0};
+
+	int curr_number_pkts = 0;
+	int last_number_pkts[MAX_NUMBER_CORES] = {0, 0, 0, 0, 0, 0, 0, 0};
+	int diff_packets = 0;
+
+	int div_counter = 0;
+	double sum_times;
+	double total_latency = 0;
+
+	double curr_throughput = 0;
+	double sum_throughput;
+	double total_throughput = 0;
+
+	int stop_flag = 0;
+
+	for(;;) {
+		for(int key = 0; key < MAX_NUMBER_CORES; key++) {
+			bpf_map_lookup_elem(counter_map_fd, &key, &curr_number_pkts);
+			if(curr_number_pkts > 0) {
+				stop_flag = 1;
+				break;
+			}
+		}
+		if(stop_flag)
+			break;
+	}
+	stop_flag = 0;
+
+	sleep(1);
+
+	int first_iter_flag = 1;
+	int active_cpu = 0;
+
+	for(;;) {
+		int total_pkts = 0;
+		sum_throughput = 0;
+		sum_times = 0;
+		for(int key = 0; key < MAX_NUMBER_CORES; key++) {
+			bpf_map_lookup_elem(counter_map_fd, &key, &curr_number_pkts);
+			bpf_map_lookup_elem(time_map_fd, &key, &diff_latency);
+
+			if(first_iter_flag && curr_number_pkts > 0)
+				active_cpu++;
+
+			diff_packets = curr_number_pkts - last_number_pkts[key];
+			if(diff_packets == 0 && curr_number_pkts != 0) {
+				stop_flag = 1;
+				break;
+			}
+
+			if(curr_number_pkts == 0) {
+				curr_latency = 0;
+				curr_throughput = 0;
+			} else {
+				if(last_latency[key] == 0) {
+					curr_latency = ((double) diff_latency) / curr_number_pkts;
+					curr_throughput = ((double) curr_number_pkts) * 1500 * 8 / 1000000000;
+				} else {
+					curr_latency = (((double) diff_latency) - ((double)last_latency[key])) / diff_packets;
+					curr_throughput = ((double) diff_packets) * 1500 * 8 / 1000000000;
+				}
+				div_counter++;
+			}
+			last_latency[key] = diff_latency;
+			last_number_pkts[key] = curr_number_pkts;
+
+			printf("CPU %d\t# packets: %d\tRate: %.02lf Gbps\tLatency: %.02f ns\n", key, curr_number_pkts, curr_throughput, curr_latency);
+			total_pkts += curr_number_pkts;
+			sum_times += curr_latency;
+			sum_throughput += curr_throughput;
+		}
+
+		if(stop_flag)
+			break;
+
+		double average_latency = sum_times / active_cpu;
+
+		printf("\nTotal packets: %d\tRate: %.02lf Gbps\tLatency: %.02lf ns\n\n", total_pkts, sum_throughput, average_latency);
+
+		total_throughput += sum_throughput;
+		total_latency += average_latency;
+
+		first_iter_flag = 0;
+		sleep(1);
+	}
+
+	unsigned long int total_sum_pkts = 0;
+	for(int key = 0; key < MAX_NUMBER_CORES; key++) {
+		bpf_map_lookup_elem(counter_map_fd, &key, &curr_number_pkts);
+		total_sum_pkts += curr_number_pkts;
+	}
+
+	int iter_with_packets = div_counter / active_cpu;
+
+	printf("\n\n# of packets: %lu\tAverage rate: %.02lf Gbps\tAverage Latency: %.02lf ns\n\n", total_sum_pkts, total_throughput / iter_with_packets, total_latency / iter_with_packets);
+}
+
+void check_queues(/*int map_of_maps_fd, */struct xdp_program *program) {
+	int value;
+	int inner_fd;
+
+	for(int key = 0; key < MAX_NUMBER_CORES; key++) {
+		value = 0;
+		char inner_map_name[32];
+		snprintf(inner_map_name, sizeof(inner_map_name), "inner_map%u", key);
+		//bpf_map_lookup_elem(map_of_maps_fd, &key, &inner_fd);
+		for(int i = 0; i < 32; i++) {
+			inner_fd = find_map_fd(xdp_program__bpf_obj(program), inner_map_name);
+			bpf_map_lookup_and_delete_elem(inner_fd, NULL, &value);
+			if(value == -1) {
+				printf("Queue of CPU %d missed counters\n", key);
+				break;
+			}
+		}
+	}
+}
+
+void print_percpu_maps(int map_fd) {
+	unsigned int values[libbpf_num_possible_cpus()];
+	int key = 0;
+	bpf_map_lookup_elem(map_fd, &key, &values);
+	/*for(int i = 0; i < libbpf_num_possible_cpus(); i++) {
+		printf("Counter of CPU %d: %u\n", i, values[i]);
+	}*/
+}
+
+void print_common_maps(int map_fd, int diff) {
+	int value;
+	if(diff) {
+		int sum = 0;
+		for(int key = 0; key < MAX_NUMBER_CORES; key++) {
+			bpf_map_lookup_elem(map_fd, &key, &value);
+			printf("Counter of CPU %d: %d\n", key, value);
+			sum += value;
+		}
+		printf("Total: %d\n\n", sum);
+	} else {
+		int key = 0;
+		bpf_map_lookup_elem(map_fd, &key, &value);
+		printf("Total: %d\n\n", value);
+	}
+}
+
 int main(int argc, char **argv)
 {
 	struct bpf_map_info map_expect = { 0 };
 	struct bpf_map_info info = { 0 };
 	struct xdp_program *program;
+	int map_of_maps_fd;
 	int common_map_fd;
 	int percpu_map_fd;
 	int counter_map_fd;
@@ -191,6 +340,11 @@ int main(int argc, char **argv)
 	}
 
 	/* Lesson#3: Locate map file descriptor */
+	map_of_maps_fd = find_map_fd(xdp_program__bpf_obj(program), "outer_map");
+	if (map_of_maps_fd < 0) {
+		return EXIT_FAIL_BPF;
+	}
+
 	common_map_fd = find_map_fd(xdp_program__bpf_obj(program), "common_array");
 	if (common_map_fd < 0) {
 		/* xdp_link_detach(cfg.ifindex, cfg.xdp_flags, 0); */
@@ -213,11 +367,19 @@ int main(int argc, char **argv)
 	}
 
 	int value = 0;
+	unsigned long int test = 0;
+	unsigned int values_array[libbpf_num_possible_cpus()];
+	for(int i = 0; i < libbpf_num_possible_cpus(); i++) {
+		values_array[i] = 0;
+	}
 	for(int key = 0; key < MAX_NUMBER_CORES; key++) {
 		bpf_map_update_elem(common_map_fd, &key, &value, BPF_ANY);
-		bpf_map_update_elem(percpu_map_fd, &key, &value, BPF_ANY);
+		//bpf_map_update_elem(percpu_map_fd, &key, &values_array, BPF_ANY);
 		bpf_map_update_elem(counter_map_fd, &key, &value, BPF_ANY);
-		bpf_map_update_elem(time_map_fd, &key, &value, BPF_ANY);
+		bpf_map_update_elem(time_map_fd, &key, &test, BPF_ANY);
+	}
+	for(int key = 0; key < MAX_NUMBER_CORES; key++) {
+		bpf_map_update_elem(percpu_map_fd, &key, &values_array, BPF_ANY);
 	}
 
 	/* Lesson#4: check map info, e.g. datarec is expected size */
@@ -238,29 +400,16 @@ int main(int argc, char **argv)
 		       );
 	}
 
-	unsigned long int diff_time;
-	double curr_time;
-	for(;;) {
-		int total_pkts = 0, num_cores = MAX_NUMBER_CORES;
-		double sum_times = 0;
-		for(int key = 0; key < MAX_NUMBER_CORES; key++) {
-			bpf_map_lookup_elem(counter_map_fd, &key, &value);
-			bpf_map_lookup_elem(time_map_fd, &key, &diff_time);
-			if(value != 0)
-				curr_time = diff_time / value;
-			else {
-				curr_time = 0;
-				num_cores--;
-			}
-			printf("CPU %d\t# packets: %d\tProcessing time: %.02f ns\n", key, value, curr_time);
-			total_pkts += value;
-			sum_times += curr_time;
-		}
-		if(num_cores == 0)
-			num_cores = 1;
-		printf("\nTotal packets: %d\tAverage processing time: %.02lf ns\n\n", total_pkts, sum_times / num_cores);
-		sleep(1);
-	}
+	map_rate_printer(counter_map_fd, time_map_fd);
+
+	if(!strcmp(default_progname, "map_of_maps"))
+		check_queues(program);
+	else if(!strcmp(default_progname, "percpu_array_lookup"))
+		print_percpu_maps(percpu_map_fd);
+	else if(!strcmp(default_progname, "common_array_lookup_same_keys"))
+		print_common_maps(common_map_fd, 0);
+	else if(!strcmp(default_progname, "common_array_lookup_diff_keys"))
+		print_common_maps(common_map_fd, 1);
 
 	return EXIT_OK;
 }
