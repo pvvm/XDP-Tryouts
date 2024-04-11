@@ -32,7 +32,7 @@ static const char *default_filename = "xdp_prog_kern.o";
 // "percpu_array_lookup"
 // "common_array_lookup_same_keys"
 // "simply_drop"
-static const char *default_progname = "percpu_array_lookup";
+static const char *default_progname = "common_array_lookup_same_keys";
 
 
 static const struct option_wrapper long_options[] = {
@@ -248,7 +248,7 @@ void check_queues(/*int map_of_maps_fd, */struct xdp_program *program) {
 		for(int i = 0; i < 32; i++) {
 			inner_fd = find_map_fd(xdp_program__bpf_obj(program), inner_map_name);
 			bpf_map_lookup_and_delete_elem(inner_fd, NULL, &value);
-			if(value == -1) {
+			if(value == 0) {
 				printf("Queue of CPU %d missed counters\n", key);
 				break;
 			}
@@ -257,12 +257,12 @@ void check_queues(/*int map_of_maps_fd, */struct xdp_program *program) {
 }
 
 void print_percpu_maps(int map_fd) {
-	unsigned int values[libbpf_num_possible_cpus()];
+	unsigned long int values[libbpf_num_possible_cpus()];
 	int key = 0;
-	bpf_map_lookup_elem(map_fd, &key, &values);
-	/*for(int i = 0; i < libbpf_num_possible_cpus(); i++) {
-		printf("Counter of CPU %d: %u\n", i, values[i]);
-	}*/
+	bpf_map_lookup_elem(map_fd, &key, values);
+	for(int i = 0; i < libbpf_num_possible_cpus(); i++) {
+		printf("Counter of CPU %d: %lu\n", i, values[i]);
+	}
 }
 
 void print_common_maps(int map_fd, int diff) {
@@ -368,23 +368,23 @@ int main(int argc, char **argv)
 
 	int value = 0;
 	unsigned long int test = 0;
-	unsigned int values_array[libbpf_num_possible_cpus()];
+	/*unsigned int values_array[libbpf_num_possible_cpus()];
 	for(int i = 0; i < libbpf_num_possible_cpus(); i++) {
 		values_array[i] = 0;
-	}
+	}*/
 	for(int key = 0; key < MAX_NUMBER_CORES; key++) {
 		bpf_map_update_elem(common_map_fd, &key, &value, BPF_ANY);
-		//bpf_map_update_elem(percpu_map_fd, &key, &values_array, BPF_ANY);
+		//bpf_map_update_elem(percpu_map_fd, &key, &value, BPF_ANY);
 		bpf_map_update_elem(counter_map_fd, &key, &value, BPF_ANY);
 		bpf_map_update_elem(time_map_fd, &key, &test, BPF_ANY);
 	}
-	for(int key = 0; key < MAX_NUMBER_CORES; key++) {
+	/*for(int key = 0; key < MAX_NUMBER_CORES; key++) {
 		bpf_map_update_elem(percpu_map_fd, &key, &values_array, BPF_ANY);
-	}
+	}*/
 
 	/* Lesson#4: check map info, e.g. datarec is expected size */
 	map_expect.key_size    = sizeof(__u32);
-	map_expect.value_size  = sizeof(int);
+	map_expect.value_size  = sizeof(__u64);
 	map_expect.max_entries = MAX_NUMBER_CORES;
 	err = __check_map_fd_info(common_map_fd, &info, &map_expect);
 	if (err) {
