@@ -12,21 +12,40 @@
 
 #define MAX_NUMBER_CORES 8
 
-struct inner_map {
-    __uint(type, BPF_MAP_TYPE_QUEUE);
+struct inner_map_array {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __type(key, __u32);
     __type(value, __u64);
-    __uint(max_entries, 32);
-} inner_map0 SEC(".maps"), inner_map1 SEC(".maps"), inner_map2 SEC(".maps"), inner_map3 SEC(".maps"),
-inner_map4 SEC(".maps"), inner_map5 SEC(".maps"), inner_map6 SEC(".maps"), inner_map7 SEC(".maps");
+    __uint(max_entries, MAX_NUMBER_CORES);
+} inner_map_array0 SEC(".maps"), inner_map_array1 SEC(".maps"), inner_map_array2 SEC(".maps"), inner_map_array3 SEC(".maps"),
+inner_map_array4 SEC(".maps"), inner_map_array5 SEC(".maps"), inner_map_array6 SEC(".maps"), inner_map_array7 SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
     __uint(max_entries, MAX_NUMBER_CORES);
     __type(key, __u32);
-    __array(values, struct inner_map);
-} outer_map SEC(".maps") = {
-    .values = {&inner_map0, &inner_map1, &inner_map2, &inner_map3,
-    &inner_map4, &inner_map5, &inner_map6, &inner_map7}
+    __array(values, struct inner_map_array);
+} outer_map_array SEC(".maps") = {
+    .values = {&inner_map_array0, &inner_map_array1, &inner_map_array2, &inner_map_array3,
+    &inner_map_array4, &inner_map_array5, &inner_map_array6, &inner_map_array7}
+};
+
+struct inner_map_queue {
+    __uint(type, BPF_MAP_TYPE_QUEUE);
+    __type(value, __u64);
+    __uint(max_entries, 32);
+} inner_map_queue0 SEC(".maps"), inner_map_queue1 SEC(".maps"), inner_map_queue2 SEC(".maps"), inner_map_queue3 SEC(".maps"),
+inner_map_queue4 SEC(".maps"), inner_map_queue5 SEC(".maps"), inner_map_queue6 SEC(".maps"), inner_map_queue7 SEC(".maps")/*,
+inner_map_aux SEC(".maps")*/;
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
+    __uint(max_entries, MAX_NUMBER_CORES /*8*/);
+    __type(key, __u32);
+    __array(values, struct inner_map_queue);
+} outer_map_queue SEC(".maps") = {
+    .values = {&inner_map_queue0, &inner_map_queue1, &inner_map_queue2, &inner_map_queue3,
+    &inner_map_queue4, &inner_map_queue5, &inner_map_queue6, &inner_map_queue7/*, &inner_map_aux*/}
 };
 
 struct {
@@ -163,6 +182,8 @@ static __always_inline int lookup_map (int key, void * map_pointer) {
 
     //bpf_printk("\nCurrent key: %d\nValue: %d", key, *value);
 
+    //*value += 1;
+
     __u64 new_value = (* value) + 1;
     bpf_map_update_elem(map_pointer, &key, &new_value, BPF_ANY);
 
@@ -182,7 +203,7 @@ int  common_array_lookup_diff_keys(struct xdp_md *ctx)
     __u64 arrival_time = bpf_ktime_get_ns();
 
     // Lookup common map
-    //for(int i = 0; i < 100; i++)
+    for(int i = 0; i < 100; i++)
         lookup_map(cpu, &common_array);
 
     __u64 finish_time = bpf_ktime_get_ns();
@@ -193,6 +214,9 @@ int  common_array_lookup_diff_keys(struct xdp_md *ctx)
     return XDP_DROP;
 }
 
+
+// TODO: check if with a HASH map I can have different queues
+// or if they are all the same for all CPUs
 SEC("xdp")
 int  percpu_array_lookup(struct xdp_md *ctx)
 {
@@ -230,7 +254,7 @@ int  common_array_lookup_same_keys(struct xdp_md *ctx)
     __u64 arrival_time = bpf_ktime_get_ns();
 
     // Lookup common map
-    //for(int i = 0; i < 100; i++)
+    for(int i = 0; i < 100; i++)
         lookup_map(0, &common_array);
 
     __u64 finish_time = bpf_ktime_get_ns();
@@ -257,8 +281,6 @@ int  simply_drop(struct xdp_md *ctx)
         bpf_printk("Error while looking up counter map\n");
     }
 
-    //bpf_printk("\n%lu\n", arrival_time);
-
     //parse_packet(ctx);
 
     __u64 arrival_time = bpf_ktime_get_ns();
@@ -271,34 +293,50 @@ int  simply_drop(struct xdp_md *ctx)
     return XDP_DROP;
 }
 
-static __always_inline __u64 lookup_map_of_maps (int key, __u64 counter) {
-    struct inner_map *map = bpf_map_lookup_elem(&outer_map, &key);
+static __always_inline __u64 lookup_map_of_maps_queue (int key, __u64 counter/*, int iteration*/) {
+    //if(iteration == 0) {
+        struct inner_map_queue *map = bpf_map_lookup_elem(&outer_map_queue, &key);
 
-    if(!map) {
-        bpf_printk("Error while accessing map of maps\n");
-        return 0;
-    }
-
-    __u64 check_value = -1;
-    if(counter > 32) {
-        bpf_map_pop_elem(map, &check_value);
-
-        if(check_value != counter - 32) {
-            counter = 0;
-            //bpf_printk("The queue missed counter %d", check_value + 32);
+        if(!map) {
+            bpf_printk("Error while accessing map of maps\n");
+            return 0;
         }
-    }
-    
-    if(bpf_map_push_elem(map, &counter, BPF_EXIST) < 0) {
-        bpf_printk("Error while accessing pushing element to queue\n");
-        return 0;
-    }
+
+        __u64 check_value = -1;
+        if(counter > 32) {
+            bpf_map_pop_elem(map, &check_value);
+
+            if(check_value != counter - 32) {
+                counter = 0;
+                //bpf_printk("The queue missed counter %d", check_value + 32);
+            }
+        }
+        
+        if(bpf_map_push_elem(map, &counter, BPF_EXIST) < 0) {
+            bpf_printk("Error while accessing pushing element to queue\n");
+            return 0;
+        }
+    /*} else {
+        key = 8;
+        __u64 value = 0;
+        struct inner_map *map = bpf_map_lookup_elem(&outer_map, &key);
+        if(!map) {
+            bpf_printk("Error while accessing map of maps\n");
+            return 0;
+        }
+
+        bpf_map_pop_elem(map, &value);
+        if(bpf_map_push_elem(map, &value, BPF_EXIST) < 0) {
+            bpf_printk("Error while accessing pushing element to queue\n");
+            return 0;
+        }
+    }*/
 
     return counter;
 }
 
 SEC("xdp")
-int  map_of_maps(struct xdp_md *ctx)
+int  map_of_maps_queue(struct xdp_md *ctx)
 {
     int cpu = bpf_get_smp_processor_id();
 
@@ -310,9 +348,75 @@ int  map_of_maps(struct xdp_md *ctx)
 
     __u64 arrival_time = bpf_ktime_get_ns();
 
-    lookup_map_of_maps(cpu, counter);
+    for(int i = 0; i < 100; i++)
+        lookup_map_of_maps_queue(cpu, counter/*, i*/);
 
     __u64 finish_time = bpf_ktime_get_ns();
+    if(!update_time(arrival_time, finish_time, cpu)) {
+        bpf_printk("Error while looking up timer map\n");
+    }
+
+    return XDP_DROP;
+}
+
+static __always_inline int lookup_map_of_maps_array (int key) {
+
+    struct inner_map_array *map = bpf_map_lookup_elem(&outer_map_array, &key);
+
+    if(!map) {
+        bpf_printk("Error while accessing map of maps\n");
+        return 0;
+    }
+
+    int inner_map_key = 0;
+    __u64 * value = bpf_map_lookup_elem(map, &inner_map_key);
+
+    if(!value)
+        return 0;
+
+    __u64 new_value = (* value) + 1;
+    bpf_map_update_elem(map, &inner_map_key, &new_value, BPF_ANY);
+
+    return 1;
+}
+
+SEC("xdp")
+int map_of_maps_array(struct xdp_md *ctx)
+{
+    int cpu = bpf_get_smp_processor_id();
+
+    if(!update_counter(cpu)) {
+        bpf_printk("Error while looking up counter map\n");
+    }
+
+    __u64 arrival_time = bpf_ktime_get_ns();
+
+    for(int i = 0; i < 100; i++)
+        lookup_map_of_maps_array(cpu);
+
+    __u64 finish_time = bpf_ktime_get_ns();
+    if(!update_time(arrival_time, finish_time, cpu)) {
+        bpf_printk("Error while looking up timer map\n");
+    }
+
+    return XDP_DROP;
+}
+
+SEC("xdp")
+int gets_cpu_id (struct xdp_md *ctx)
+{
+    int cpu;
+
+    __u64 arrival_time = bpf_ktime_get_ns();
+    for(int i = 0; i < 100; i++)
+        cpu = bpf_get_smp_processor_id();
+
+    __u64 finish_time = bpf_ktime_get_ns();
+
+    if(!update_counter(cpu)) {
+        bpf_printk("Error while looking up counter map\n");
+    }
+
     if(!update_time(arrival_time, finish_time, cpu)) {
         bpf_printk("Error while looking up timer map\n");
     }
