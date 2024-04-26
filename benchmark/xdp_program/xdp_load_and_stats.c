@@ -25,8 +25,14 @@ static const char *__doc__ = "XDP loader and stats program\n"
 
 #define MAX_NUMBER_CORES 8
 
+struct map_locked_value {
+    __u64 value;
+    struct bpf_spin_lock lock;
+};
+
 static const char *default_filename = "xdp_prog_kern.o";
 
+// "lock_map"
 // "gets_cpu_id"
 // "map_of_maps_array"
 // "map_of_maps_queue"
@@ -34,7 +40,7 @@ static const char *default_filename = "xdp_prog_kern.o";
 // "percpu_array_lookup"
 // "common_array_lookup_same_keys"
 // "simply_drop"
-static const char *default_progname = "gets_cpu_id";
+static const char *default_progname = "lock_map";
 
 
 static const struct option_wrapper long_options[] = {
@@ -256,18 +262,29 @@ void check_queues(/*int map_of_maps_fd, */struct xdp_program *program) {
 	}
 }
 
-void check_arrays(struct xdp_program *program) {
+void check_arrays(struct xdp_program *program, int map_of_maps_fd) {
 	__u64 value;
+	int inner_id;
 	int inner_fd;
 	int key = 0;
+
 	for(int i = 0; i < MAX_NUMBER_CORES; i++) {
+		bpf_map_lookup_elem(map_of_maps_fd, &i, &inner_id);
+		inner_fd = bpf_map_get_fd_by_id(inner_id);
 		value = 0;
-		char inner_map_name[32];
+		/*char inner_map_name[32];
 		snprintf(inner_map_name, sizeof(inner_map_name), "inner_map_array%u", i);
-		inner_fd = find_map_fd(xdp_program__bpf_obj(program), inner_map_name);
+		inner_fd = find_map_fd(xdp_program__bpf_obj(program), inner_map_name);*/
 		bpf_map_lookup_elem(inner_fd, &key, &value);
 		printf("Counter of CPU %d: %llu\n", i, value);
 	}
+}
+
+void print_lock_maps(int map_fd) {
+	struct map_locked_value locked_value;
+	int key = 0;
+	bpf_map_lookup_elem(map_fd, &key, &locked_value);
+	printf("Total: %llu\n\n", locked_value.value);
 }
 
 void print_percpu_maps(int map_fd) {
@@ -299,11 +316,37 @@ void print_common_maps(int map_fd, int diff) {
 	}
 }
 
+void userspace_map_access(int mom_array_fd, int mom_queue_fd, int percpu_map_fd, struct xdp_program *program) {
+	clock_t start, finish;
+	double runtime;
+
+	int key = 0;
+	__u32 inner_fd, inner_id;
+	__u64 value;
+
+	start = clock();
+
+	if(bpf_map_lookup_elem(mom_array_fd, &key, &inner_id) < 0)
+		printf("Problem while reading outer map\n");
+
+	inner_fd = bpf_map_get_fd_by_id(inner_id);
+
+	if(bpf_map_lookup_elem(inner_fd, &key, &value) < 0)
+		printf("Problem while reading inner map\n");
+
+	finish = clock();
+
+	runtime = ((double) (finish - start)) / CLOCKS_PER_SEC * 1e9;
+
+	printf("Runtime to read from map of maps: %.02lf\n", runtime);
+}
+
 int main(int argc, char **argv)
 {
 	struct bpf_map_info map_expect = { 0 };
 	struct bpf_map_info info = { 0 };
 	struct xdp_program *program;
+	int lock_map_fd;
 	int map_of_maps_array_fd;
 	int map_of_maps_queue_fd;
 	int common_map_fd;
@@ -358,6 +401,11 @@ int main(int argc, char **argv)
 	}
 
 	/* Lesson#3: Locate map file descriptor */
+	lock_map_fd = find_map_fd(xdp_program__bpf_obj(program), "lock_array");
+	if (lock_map_fd < 0) {
+		return EXIT_FAIL_BPF;
+	}
+
 	map_of_maps_array_fd = find_map_fd(xdp_program__bpf_obj(program), "outer_map_array");
 	if (map_of_maps_array_fd < 0) {
 		return EXIT_FAIL_BPF;
@@ -422,6 +470,8 @@ int main(int argc, char **argv)
 		       );
 	}
 
+	userspace_map_access(map_of_maps_array_fd, map_of_maps_queue_fd, percpu_map_fd, program);
+
 	map_rate_printer(counter_map_fd, time_map_fd);
 
 	if(!strcmp(default_progname, "map_of_maps_queue"))
@@ -433,7 +483,9 @@ int main(int argc, char **argv)
 	else if(!strcmp(default_progname, "common_array_lookup_diff_keys"))
 		print_common_maps(common_map_fd, 1);
 	else if(!strcmp(default_progname, "map_of_maps_array"))
-		check_arrays(program);
+		check_arrays(program, map_of_maps_array_fd);
+	else if(!strcmp(default_progname, "lock_map"))
+		print_lock_maps(lock_map_fd);
 
 	return EXIT_OK;
 }

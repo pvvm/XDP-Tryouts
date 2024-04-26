@@ -45,3 +45,4 @@ sudo dpdk-hugepages.py -p ${PAGE_SIZE} --setup ${TOTAL_SIZE}
 
 # Verify DPDK installation
 echo "DPDK has been installed successfully."
+
