@@ -41,10 +41,11 @@ static __always_inline __u64 update_counter (int key_cpu) {
     if(!value)
         return 0;
 
-    __u64 new_value = (* value) + 1;
-    bpf_map_update_elem(&counter_array, &key_cpu, &new_value, BPF_ANY);
+    //__u64 new_value = (* value) + 1;
+    //bpf_map_update_elem(&counter_array, &key_cpu, &new_value, BPF_ANY);
+    *value += 1;
 
-    return new_value;
+    return *value;
 }
 
 static __always_inline int lookup_map_of_maps_queue (int key, int number) {
