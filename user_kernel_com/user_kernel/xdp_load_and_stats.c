@@ -9,6 +9,7 @@ static const char *__doc__ = "XDP loader and stats program\n"
 #include <string.h>
 #include <errno.h>
 #include <getopt.h>
+#include <signal.h>
 
 #include <locale.h>
 #include <unistd.h>
@@ -36,16 +37,27 @@ static const char *__doc__ = "XDP loader and stats program\n"
 #include "../common/common_user_bpf_xdp.h"
 
 #define MAX_NUMBER_CORES 8
+#define MAX_NUMBER_PKTS 100000000
 
 static const char *default_filename = "xdp_prog_kern.o";
 
 static const char *default_progname = "simply_drop";
 
+int counter_percore[8];
+
+
+bool stop = false;
+
+struct config cfg = {
+		.ifindex   = -1,
+		.do_unload = false,
+};
 
 struct Argument {
 	int prog_fd;
 	unsigned char * data;  // Ensure the buffer is large enough
     size_t data_len;
+	int cpu_id;
 };
 
 
@@ -124,7 +136,7 @@ void create_tcp_header(struct tcphdr *tcp_hdr) {
 	//tcp_hdr->ack_seq = htonl(0);
 }
 
-void create_packet(unsigned char *data, size_t *data_len) {
+void create_packet(unsigned char *data/*, size_t *data_len*/) {
     struct ethhdr eth_hdr;
     struct iphdr ip_hdr;
     struct tcphdr tcp_hdr;
@@ -141,7 +153,7 @@ void create_packet(unsigned char *data, size_t *data_len) {
     memcpy(data + offset, &tcp_hdr, sizeof(tcp_hdr));
     offset += sizeof(tcp_hdr);
 
-    *data_len = offset;
+    //*data_len = offset;
 }
 
 void print_counter_map(int map_fd) {
@@ -174,20 +186,60 @@ void *thread_exec(void *arg) {
         },
     };
 
-	while(1) {
-		for(int i = 0; i < 100000; i++) {
-			int ret = syscall(__NR_bpf, BPF_PROG_TEST_RUN, &run_attr, sizeof(run_attr));
-			if (ret < 0) {
-				fprintf(stderr, "BPF_PROG_TEST_RUN failed: %s\n", strerror(errno));
-				break;
-			}
+	int cpu_id = info->cpu_id;
+
+	while(!stop) {
+		int ret = syscall(__NR_bpf, BPF_PROG_TEST_RUN, &run_attr, sizeof(run_attr));
+		if (ret < 0) {
+			fprintf(stderr, "BPF_PROG_TEST_RUN failed: %s\n", strerror(errno));
+			break;
 		}
+		counter_percore[cpu_id] += 1;
 	}
 	
 	free(info);
 	pthread_exit(NULL);
 }
 
+void print_queues(int outer_map_fd) {
+	__u32 value;
+	int inner_fd;
+	int inner_id;
+
+	for(int i = 0; i < MAX_NUMBER_CORES; i++) {
+		int last_value = -1;
+
+		bpf_map_lookup_elem(outer_map_fd, &i, &inner_id);
+		inner_fd = bpf_map_get_fd_by_id(inner_id);
+		value = -1;
+		printf("\n\nQueue of CPU %d: ", i);
+
+		for(int i = 0; i < 1248; i++) {
+			bpf_map_lookup_and_delete_elem(inner_fd, NULL, &value);
+			if(i > 0 && (last_value + 2 != value)) {
+				if(last_value != 8 && last_value != 9)
+					printf("**(** ");
+				else if((last_value == 8 || last_value == 9) && (value != 0 && value != 1))
+					printf("**)** ");
+			}
+			printf("%d ", value);
+			last_value = value;
+		}
+	}
+}
+
+static void exit_application(int signal)
+{
+	stop = true;
+	int err;
+
+	cfg.unload_all = true;
+	err = do_unload(&cfg);
+	if (err) {
+		fprintf(stderr, "Couldn't detach XDP program on iface '%s' : (%d)\n",
+			cfg.ifname, err);
+	}
+}
 
 int main(int argc, char **argv)
 {
@@ -195,10 +247,14 @@ int main(int argc, char **argv)
 	char errmsg[1024];
 	int err;
 
-	struct config cfg = {
-		.ifindex   = -1,
-		.do_unload = false,
-	};
+	/* Global shutdown handler */
+	signal(SIGINT, exit_application);
+
+	for(int i = 0; i < MAX_NUMBER_CORES; i++) {
+		counter_percore[i] = 0;
+	}
+
+	
 	/* Set default BPF-ELF object file and BPF program name */
 	strncpy(cfg.filename, default_filename, sizeof(cfg.filename));
 	strncpy(cfg.progname,  default_progname,  sizeof(cfg.progname));
@@ -248,12 +304,17 @@ int main(int argc, char **argv)
 
 
 	unsigned char data[1500];  // Ensure the buffer is large enough
-    size_t data_len = 0;
+    size_t data_len = 1499;
     
-    create_packet(data, &data_len);
+    create_packet(data/*, &data_len*/);
 
 	int map_fd = find_map_fd(xdp_program__bpf_obj(program), "counter_array");
 	if (map_fd < 0) {
+		return EXIT_FAIL_BPF;
+	}
+
+	int outer_map_fd = find_map_fd(xdp_program__bpf_obj(program), "outer_map_queue");
+	if (outer_map_fd < 0) {
 		return EXIT_FAIL_BPF;
 	}
 
@@ -267,21 +328,42 @@ int main(int argc, char **argv)
 		arg->prog_fd = prog_fd;
 		arg->data_len = data_len;
 		arg->data = data;
+		arg->cpu_id = i;
 		CPU_SET(i, &cpuset);
 		pthread_create(&threads[i], NULL, thread_exec, (void *) arg);
 		pthread_setaffinity_np(threads[i], sizeof(cpu_set_t), &cpuset);
 		CPU_ZERO(&cpuset);
 	}
 
-	while(1) {
+	long int sum;
+	while(!stop) {
 		print_counter_map(map_fd);
+		for(int i = 0; i < MAX_NUMBER_CORES; i++)
+			sum += counter_percore[i];
+		if(sum > MAX_NUMBER_PKTS) {
+			stop = true;
+			break;
+		}
+		sum = 0;
 		sleep(1);
 	}
 
 	for(int i = 0; i < MAX_NUMBER_CORES; i++) {
 		pthread_join(threads[i], NULL);
 	}
-	
+
+
+	sum = 0;
+	for(int i = 0; i < MAX_NUMBER_CORES; i++)
+		sum += counter_percore[i];
+
+	print_counter_map(map_fd);
+
+	printf("Total number of packets sent by userspace program: %ld\n\n", sum);
+
+	print_queues(outer_map_fd);
+
+	printf("\n\n");
 
     return 0;
 }
