@@ -1,0 +1,6 @@
+[submodule "user_kernel_com/xdp-tools"]
+	path = user_kernel_com/xdp-tools
+	url = https://github.com/xdp-project/xdp-tools/
+[submodule "user_kernel_com/libbpf"]
+	path = user_kernel_com/libbpf
+	url = https://github.com/libbpf/libbpf/
