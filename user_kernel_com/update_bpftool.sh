@@ -5,11 +5,13 @@ wget https://github.com/libbpf/bpftool/releases/download/v7.2.0/bpftool-v7.2.0-a
 sudo rm /usr/sbin/bpftool
 
 # Replace with new version
-sudo tar -xzvf ~/bpftool-v7.2.0-amd64.tar.gz -C /usr/sbin/
+sudo tar -xzvf bpftool-v7.2.0-amd64.tar.gz -C /usr/sbin/
+
+#sudo chmod +x /usr/sbin/bpftool
 
 # Creates a link between the two includes (solve asm/types.h error)
-sudo ln -s /usr/include/x86_64-linux-gnu/asm /usr/include/asm
+#sudo ln -s /usr/include/x86_64-linux-gnu/asm /usr/include/asm
 
-./configure
+#./configure
 
-make
+#make
