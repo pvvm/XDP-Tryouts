@@ -1,5 +1,8 @@
 How to compile:
 
+Give permission for script
+chmod +x update_bpftool.sh
+
 Script that updates the bpftool version
 ./update_bpftool.sh
 
