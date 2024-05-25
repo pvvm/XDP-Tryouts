@@ -2,9 +2,11 @@
 
 # Update package repositories
 sudo apt update
+sudo apt-get update
 
 # Install dependencies
 sudo apt install -y build-essential linux-headers-$(uname -r) wget
+sudo apt-get install pkg-config
 
 sudo pip3 install meson ninja
 

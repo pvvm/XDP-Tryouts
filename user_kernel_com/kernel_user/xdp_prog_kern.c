@@ -33,6 +33,7 @@ int xdp_sock_prog(struct xdp_md *ctx)
     __u32 *pkt_count;
 
     pkt_count = bpf_map_lookup_elem(&xdp_stats_map, &index);
+    
     /*if (pkt_count) {
 
         // We pass every other packet
