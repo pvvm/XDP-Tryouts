@@ -10,7 +10,7 @@ fi
 VALUES=("01" "02" "04" "08" "10" "20" "40" "80")
 
 # Start IRQ number
-IRQ_NUMBER=65
+IRQ_NUMBER=62
 
 # Iterate over IRQ numbers
 for VALUE in "${VALUES[@]}"; do
