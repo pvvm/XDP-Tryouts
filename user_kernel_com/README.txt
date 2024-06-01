@@ -23,3 +23,8 @@ sudo update-alternatives --install /usr/bin/llc llc /usr/bin/llc-16 100
 
 CLANG=clang-16 LLC=llc-16 ./configure
 make
+
+Note:
+In NICs with ice driver, libxdp might complaint about the MTU size being too big.
+We can set a limit of 1500 with:
+sudo ip link set dev enp59s0f1np1 mtu 1500
