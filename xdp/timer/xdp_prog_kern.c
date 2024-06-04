@@ -70,7 +70,7 @@ static int function(void *map, __u32 *key, struct map_elem *val) {
         test_function();
         //testing_timer(entry->packet);
 
-        bpf_timer_start(&entry->timer, ONE_SEC, 0);
+        //bpf_timer_start(&entry->timer, ONE_SEC, 0);
     }
 
     return 0;
