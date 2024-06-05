@@ -73,7 +73,7 @@ struct outer_hash {
 static __u64 * get_array_map(struct hash_key key) {
     __u64 *index = bpf_map_lookup_elem(&index_hash, &key);
     if(!index) {    // If the map doesn't contain an entry for this key
-        __u32 new_value = 0;
+        __u64 new_value = 0;
         bpf_map_update_elem(&index_hash, &key, &new_value, BPF_NOEXIST);
         bpf_printk("Creating new entry in hash map");
         index = bpf_map_lookup_elem(&index_hash, &key);
@@ -141,12 +141,12 @@ int testing_prod_cons(struct xdp_md *ctx)
         }
 
         // Note: an LLVM error happens if inner_elem->value has 32 bit. 64 bits works well
-        //__sync_fetch_and_sub(&inner_elem->occupied, 1);
-        int result = bpf_map_delete_elem(inner, index);
+        __sync_fetch_and_sub(&inner_elem->occupied, 1);
+        /*int result = bpf_map_delete_elem(inner, index);
         if(result == 0)
             bpf_printk("Deleted element");
         else
-            bpf_printk("Failed to delete element");
+            bpf_printk("Failed to delete element");*/
         //__sync_fetch_and_xor(&inner_elem->value, inner_elem->value);
         //__sync_val_compare_and_swap(&inner_elem->value, inner_elem->value, 12);
         //bpf_printk("%d %d", inner_elem->occupied, inner_elem->value);
