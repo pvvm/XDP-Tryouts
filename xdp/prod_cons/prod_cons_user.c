@@ -35,6 +35,8 @@ static const char *__doc__ = "XDP loader and stats program\n"
 #include "../common/common_user_bpf_xdp.h"
 
 #define MAX_NUMBER_CORES 8
+#define MAX_QUEUE_LEN 15
+#define NUMBER_UPDATES 50
 
 static const char *default_filename = "prod_cons_kern.o";
 
@@ -42,10 +44,23 @@ static const char *default_progname = "testing_prod_cons";
 
 bool stop = false;
 
-
 struct config cfg = {
 		.ifindex   = -1,
 		.do_unload = false,
+};
+
+struct map_elem {
+    __u64 occupied;
+    __u64 value;
+};
+
+struct hash_key {
+    int cpu;
+};
+
+struct Argument {
+	int map_fd;
+	int cpu_id;
 };
 
 static const struct option_wrapper long_options[] = {
@@ -112,6 +127,70 @@ static void exit_application(int signal)
 	}
 }
 
+void *thread_exec(void *arg) {
+	struct Argument *info = (struct Argument *) arg;
+
+	int cpu_id = info->cpu_id;
+	// Note: the flow_id (in this case cpu_id) is being passed as an
+	// argument of the function started with this thread. In the future,
+	// we'll probably need other threads that will keep sending new requests
+	// to this thread, which will include the flow_id
+	int map_fd = info->map_fd;
+
+	int inner_id;
+	int inner_fd;
+	int ret;
+
+	struct hash_key key = {cpu_id};
+	struct map_elem old_entry;
+	struct map_elem new_entry = {1, 0};
+
+	int i = 0;
+	// Note: here I'm using a single integer to represent the next index
+	// to be changed in the queue. But we'll need data structures as threads are
+	// responsible for more than one flow
+	int index = 0;
+	while(i < NUMBER_UPDATES) {
+		new_entry.value = cpu_id * i;
+
+		//printf("CPU %d index %d\n", cpu_id, index);
+		ret = bpf_map_lookup_elem(map_fd, &key, &inner_id);
+		if(ret < 0) {
+			printf("Couldn't find entry of outer map\n");
+			break;
+		}
+		inner_fd = bpf_map_get_fd_by_id(inner_id);
+
+		ret = bpf_map_lookup_elem(inner_fd, &index, &old_entry);
+		if(ret < 0) {
+			printf("Couldn't find entry of inner map\n");
+			break;
+		}
+
+		printf("Old entry CPU %d: %lld %lld\n", cpu_id, old_entry.occupied, old_entry.value);
+
+		if(!old_entry.occupied) {
+			ret = bpf_map_update_elem(inner_fd, &index, &new_entry, BPF_ANY);
+			if(ret < 0) {
+				printf("Couldn't update entry of inner map\n");
+				break;
+			}
+			if(index < MAX_QUEUE_LEN - 1)
+				index++;
+			else
+				index = 0;
+		} else {
+			printf("Entry of CPU %d and index %d is already occupied\n", cpu_id, index);
+		}
+
+		i++;
+		sleep(rand() % 3 + 1);
+	}
+
+	free(info);
+	pthread_exit(NULL);
+}
+
 int main(int argc, char **argv)
 {
 	struct xdp_program *program;
@@ -173,16 +252,24 @@ int main(int argc, char **argv)
 		return EXIT_FAIL_BPF;
 	}
 
-	/*while(!stop) {
-		printf("%d", stop);
-	}
-	printf("%d", stop);*/
+	srand(time(NULL));
 
-	int i = 0;
-	while(i == 0) {
-		(void)!scanf("%d", &i);
-		//if(scanf("%d", &i) == -1)
-		//	printf("something");
+	pthread_t threads[MAX_NUMBER_CORES];
+	cpu_set_t cpuset;
+	CPU_ZERO(&cpuset);
+
+	for(int i = 0; i < MAX_NUMBER_CORES; i++) {
+		struct Argument *arg = malloc(sizeof(struct Argument));
+		arg->map_fd = map_fd;
+		arg->cpu_id = i;
+		CPU_SET(i, &cpuset);
+		pthread_create(&threads[i], NULL, thread_exec, (void *) arg);
+		pthread_setaffinity_np(threads[i], sizeof(cpu_set_t), &cpuset);
+		CPU_ZERO(&cpuset);
+	}
+
+	for(int i = 0; i < MAX_NUMBER_CORES; i++) {
+		pthread_join(threads[i], NULL);
 	}
 
 	cfg.unload_all = true;
