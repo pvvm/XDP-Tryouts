@@ -303,6 +303,7 @@ void check_hash_MoM(int hash_map_of_maps_fd) {
 		inner_fd = bpf_map_get_fd_by_id(inner_id);
 		bpf_map_lookup_elem(inner_fd, &i, &elem);
 		printf("Counter of CPU %d: %llu\n", key.cpu, elem.value);
+		sum += elem.value;
 	}
 	printf("Total: %llu\n\n", sum);
 }
