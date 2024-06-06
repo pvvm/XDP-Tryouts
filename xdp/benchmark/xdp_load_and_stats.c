@@ -30,6 +30,14 @@ struct map_locked_value {
     struct bpf_spin_lock lock;
 };
 
+struct map_elem {
+    __u64 value;
+};
+
+struct hash_key {
+    int cpu;
+};
+
 static const char *default_filename = "xdp_prog_kern.o";
 
 // "map_of_maps_hash"
@@ -282,6 +290,36 @@ void check_arrays(struct xdp_program *program, int map_of_maps_fd) {
 	}
 }
 
+void check_hash_MoM(int hash_map_of_maps_fd) {
+	struct map_elem elem;
+	int inner_id;
+	int inner_fd;
+	struct hash_key key;
+	__u64 sum = 0;
+
+	for(int i = 0; i < MAX_NUMBER_CORES; i++) {
+		key.cpu = i;
+		bpf_map_lookup_elem(hash_map_of_maps_fd, &key, &inner_id);
+		inner_fd = bpf_map_get_fd_by_id(inner_id);
+		bpf_map_lookup_elem(inner_fd, &i, &elem);
+		printf("Counter of CPU %d: %llu\n", key.cpu, elem.value);
+	}
+	printf("Total: %llu\n\n", sum);
+}
+
+void print_hash_maps(int map_fd) {
+	struct map_elem elem;
+	__u64 sum = 0;
+	struct hash_key key;
+	for(int i = 0; i < MAX_NUMBER_CORES; i++) {
+		key.cpu = i;
+		bpf_map_lookup_elem(map_fd, &key, &elem);
+		printf("Counter of CPU %d: %llu\n", key.cpu, elem.value);
+		sum += elem.value;
+	}
+	printf("Total: %llu\n\n", sum);
+}
+
 void print_lock_maps(int map_fd) {
 	struct map_locked_value locked_value;
 	int key = 0;
@@ -290,11 +328,11 @@ void print_lock_maps(int map_fd) {
 }
 
 void print_percpu_maps(int map_fd) {
-	__u64 values[libbpf_num_possible_cpus()];
+	__u64 values[/*libbpf_num_possible_cpus()*/MAX_NUMBER_CORES];
 	int key = 0;
 	__u64 sum = 0;
 	bpf_map_lookup_elem(map_fd, &key, values);
-	for(int i = 0; i < libbpf_num_possible_cpus(); i++) {
+	for(int i = 0; i < /*libbpf_num_possible_cpus()*/MAX_NUMBER_CORES; i++) {
 		printf("Counter of CPU %d: %llu\n", i, values[i]);
 		sum += values[i];
 	}
@@ -348,6 +386,8 @@ int main(int argc, char **argv)
 	struct bpf_map_info map_expect = { 0 };
 	struct bpf_map_info info = { 0 };
 	struct xdp_program *program;
+	int hash_map_fd;
+	int map_of_maps_hash_fd;
 	int lock_map_fd;
 	int map_of_maps_array_fd;
 	int map_of_maps_queue_fd;
@@ -403,6 +443,16 @@ int main(int argc, char **argv)
 	}
 
 	/* Lesson#3: Locate map file descriptor */
+	hash_map_fd = find_map_fd(xdp_program__bpf_obj(program), "common_hash");
+	if (hash_map_fd < 0) {
+		return EXIT_FAIL_BPF;
+	}
+
+	map_of_maps_hash_fd = find_map_fd(xdp_program__bpf_obj(program), "outer_map_hash");
+	if (map_of_maps_hash_fd < 0) {
+		return EXIT_FAIL_BPF;
+	}
+
 	lock_map_fd = find_map_fd(xdp_program__bpf_obj(program), "lock_array");
 	if (lock_map_fd < 0) {
 		return EXIT_FAIL_BPF;
@@ -476,7 +526,11 @@ int main(int argc, char **argv)
 
 	map_rate_printer(counter_map_fd, time_map_fd);
 
-	if(!strcmp(default_progname, "map_of_maps_queue"))
+	if(!strcmp(default_progname, "map_of_maps_hash"))
+		check_hash_MoM(map_of_maps_hash_fd);
+	else if(!strcmp(default_progname, "common_hash_map"))
+		print_hash_maps(hash_map_fd);
+	else if(!strcmp(default_progname, "map_of_maps_queue"))
 		check_queues(program);
 	else if(!strcmp(default_progname, "percpu_array_lookup"))
 		print_percpu_maps(percpu_map_fd);
@@ -488,6 +542,13 @@ int main(int argc, char **argv)
 		check_arrays(program, map_of_maps_array_fd);
 	else if(!strcmp(default_progname, "lock_map"))
 		print_lock_maps(lock_map_fd);
+
+	cfg.unload_all = true;
+	err = do_unload(&cfg);
+	if (err) {
+		fprintf(stderr, "Couldn't detach XDP program on iface '%s' : (%d)\n",
+			cfg.ifname, err);
+	}
 
 	return EXIT_OK;
 }

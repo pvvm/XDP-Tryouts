@@ -117,12 +117,12 @@ inner_array_hash5 SEC(".maps"),
 inner_array_hash6 SEC(".maps"),
 inner_array_hash7 SEC(".maps");
 
-struct outer_hash {
+struct outer_map_hash {
     __uint(type, BPF_MAP_TYPE_HASH_OF_MAPS);
     __type(key, struct hash_key);
     __uint(max_entries, MAX_NUMBER_CORES);
     __array(values, struct inner_array_hash);
-} outer_hash SEC(".maps") = {
+} outer_map_hash SEC(".maps") = {
     .values = {
         [0] = &inner_array_hash0,
         [1] = &inner_array_hash1,
@@ -571,7 +571,7 @@ int  lock_map(struct xdp_md *ctx)
 static __always_inline int lookup_map_of_maps_hash (__u64 key) {
 
     struct hash_key hash_map_key = {key};
-    struct inner_array_hash *inner = bpf_map_lookup_elem(&outer_hash, &hash_map_key);
+    struct inner_array_hash *inner = bpf_map_lookup_elem(&outer_map_hash, &hash_map_key);
 
     if(!inner) {
         bpf_printk("Error while accessing map of maps\n");
@@ -643,8 +643,14 @@ int  common_hash_map(struct xdp_md *ctx)
         struct hash_key hash_map_key = {cpu};
         struct map_elem *elem = bpf_map_lookup_elem(&common_hash, &hash_map_key);
         if(!elem) {
-            bpf_printk("Couldn't get entry of hash map");
-            return 0;
+            __u64 new_value = 0;
+            bpf_map_update_elem(&common_hash, &hash_map_key, &new_value, BPF_NOEXIST);
+            //bpf_printk("Creating new entry in hash map");
+            elem = bpf_map_lookup_elem(&common_hash, &hash_map_key);
+            if(!elem) {
+                bpf_printk("Error while getting entry from hash map");
+                return 0;
+            }
         }
         elem->value += 1;
     //}
