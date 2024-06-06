@@ -88,6 +88,53 @@ struct {
     __uint(max_entries, MAX_NUMBER_CORES);
 } time_array SEC(".maps");
 
+struct map_elem {
+    __u64 value;
+};
+
+struct hash_key {
+    int cpu;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, struct hash_key);
+    __type(value, __u64);
+    __uint(max_entries, MAX_NUMBER_CORES);
+} common_hash SEC(".maps");
+
+struct inner_array_hash {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __type(key, __u32);
+    __type(value, struct map_elem);
+    __uint(max_entries, 32);
+} inner_array_hash0 SEC(".maps"),
+inner_array_hash1 SEC(".maps"),
+inner_array_hash2 SEC(".maps"),
+inner_array_hash3 SEC(".maps"),
+inner_array_hash4 SEC(".maps"),
+inner_array_hash5 SEC(".maps"),
+inner_array_hash6 SEC(".maps"),
+inner_array_hash7 SEC(".maps");
+
+struct outer_hash {
+    __uint(type, BPF_MAP_TYPE_HASH_OF_MAPS);
+    __type(key, struct hash_key);
+    __uint(max_entries, MAX_NUMBER_CORES);
+    __array(values, struct inner_array_hash);
+} outer_hash SEC(".maps") = {
+    .values = {
+        [0] = &inner_array_hash0,
+        [1] = &inner_array_hash1,
+        [2] = &inner_array_hash2,
+        [3] = &inner_array_hash3,
+        [4] = &inner_array_hash4,
+        [5] = &inner_array_hash5,
+        [6] = &inner_array_hash6,
+        [7] = &inner_array_hash7,
+    },
+};
+
 /*static __always_inline int parse_packet(struct xdp_md *ctx) {
     void *data_end = (void *)(long)ctx->data_end;
     void *data     = (void *)(long)ctx->data;
@@ -519,5 +566,97 @@ int  lock_map(struct xdp_md *ctx)
 
     return XDP_DROP;
 }
+
+
+static __always_inline int lookup_map_of_maps_hash (__u64 key) {
+
+    struct hash_key hash_map_key = {key};
+    struct inner_array_hash *inner = bpf_map_lookup_elem(&outer_hash, &hash_map_key);
+
+    if(!inner) {
+        bpf_printk("Error while accessing map of maps\n");
+        return 0;
+    }
+
+    // Note: we may need to evaluate this series of lookups, since we may need
+    // it in the scheduler (to have a hash between flow_id and index of queues)
+    /*__u64 *index = bpf_map_lookup_elem(&index_hash, &hash_map_key);
+    if(!index) {    // If the map doesn't contain an entry for this key
+        __u64 new_value = 0;
+        bpf_map_update_elem(&index_hash, &hash_map_key, &new_value, BPF_NOEXIST);
+        //bpf_printk("Creating new entry in hash map");
+        index = bpf_map_lookup_elem(&index_hash, &hash_map_key);
+        if(!index)
+            return 0;
+    }*/
+
+
+    struct map_elem *inner_elem = bpf_map_lookup_elem(inner, &key);
+    if(!inner_elem) {
+        bpf_printk("Couldn't get entry of inner map");
+        return 0;
+    }
+
+    inner_elem->value += 1;
+    //__u64 new_value = (* value) + 1;
+    //bpf_map_update_elem(map, &inner_map_key, &new_value, BPF_ANY);
+
+    return 1;
+}
+
+SEC("xdp")
+int map_of_maps_hash(struct xdp_md *ctx)
+{
+    __u64 cpu = bpf_get_smp_processor_id();
+
+    if(!update_counter(cpu)) {
+        bpf_printk("Error while looking up counter map\n");
+    }
+
+    __u64 arrival_time = bpf_ktime_get_ns();
+
+    //for(int i = 0; i < 100; i++)
+        lookup_map_of_maps_hash(cpu);
+
+    __u64 finish_time = bpf_ktime_get_ns();
+    if(!update_time(arrival_time, finish_time, cpu)) {
+        bpf_printk("Error while looking up timer map\n");
+    }
+
+    return XDP_DROP;
+}
+
+SEC("xdp")
+int  common_hash_map(struct xdp_md *ctx)
+{
+    int cpu = bpf_get_smp_processor_id();
+
+    // Update counter map
+    if(!update_counter(cpu)) {
+        bpf_printk("Error while looking up counter map");
+    }
+
+    __u64 arrival_time = bpf_ktime_get_ns();
+
+    // Lookup common map
+    //for(int i = 0; i < 100; i++) {
+        struct hash_key hash_map_key = {cpu};
+        struct map_elem *elem = bpf_map_lookup_elem(&common_hash, &hash_map_key);
+        if(!elem) {
+            bpf_printk("Couldn't get entry of hash map");
+            return 0;
+        }
+        elem->value += 1;
+    //}
+
+    __u64 finish_time = bpf_ktime_get_ns();
+    if(!update_time(arrival_time, finish_time, cpu)) {
+        bpf_printk("Error while looking up timer map");
+    }
+
+    return XDP_DROP;
+}
+
+
 
 char _license[] SEC("license") = "GPL";

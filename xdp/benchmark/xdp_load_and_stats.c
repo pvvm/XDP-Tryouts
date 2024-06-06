@@ -32,6 +32,8 @@ struct map_locked_value {
 
 static const char *default_filename = "xdp_prog_kern.o";
 
+// "map_of_maps_hash"
+// "common_hash_map"
 // "lock_map"
 // "gets_cpu_id"
 // "map_of_maps_array"
@@ -40,7 +42,7 @@ static const char *default_filename = "xdp_prog_kern.o";
 // "percpu_array_lookup"
 // "common_array_lookup_same_keys"
 // "simply_drop"
-static const char *default_progname = "lock_map";
+static const char *default_progname = "common_hash_map";
 
 
 static const struct option_wrapper long_options[] = {
