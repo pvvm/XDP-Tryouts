@@ -213,10 +213,10 @@ void map_rate_printer(int counter_map_fd, int time_map_fd) {
 			} else {
 				if(last_latency[key] == 0) {
 					curr_latency = ((double) diff_latency) / curr_number_pkts;
-					curr_throughput = ((double) curr_number_pkts) * 1500 * MAX_NUMBER_CORES / 1000000000;
+					curr_throughput = ((double) curr_number_pkts) * 1500 * 8 / 1000000000;
 				} else {
 					curr_latency = (((double) diff_latency) - ((double)last_latency[key])) / diff_packets;
-					curr_throughput = ((double) diff_packets) * 1500 * MAX_NUMBER_CORES / 1000000000;
+					curr_throughput = ((double) diff_packets) * 1500 * 8 / 1000000000;
 				}
 				div_counter++;
 			}
