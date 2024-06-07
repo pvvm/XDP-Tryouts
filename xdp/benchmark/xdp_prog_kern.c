@@ -252,10 +252,18 @@ static __always_inline int lookup_map (int key, void * map_pointer) {
     return 1;
 }
 
+// Simply use bpf_get_smp_processor_id in servers other than paper
+static __always_inline int get_and_check_cpu_id() {
+    int cpu = bpf_get_smp_processor_id();
+    if(cpu >= 10)
+        cpu -= 10;
+    return cpu;
+}
+
 SEC("xdp")
 int  common_array_lookup_diff_keys(struct xdp_md *ctx)
 {
-    int cpu = bpf_get_smp_processor_id();
+    int cpu = get_and_check_cpu_id();
 
     // Update counter map
     if(!update_counter(cpu)) {
@@ -282,7 +290,7 @@ int  common_array_lookup_diff_keys(struct xdp_md *ctx)
 SEC("xdp")
 int  percpu_array_lookup(struct xdp_md *ctx)
 {
-    int cpu = bpf_get_smp_processor_id();
+    int cpu = get_and_check_cpu_id();
 
     // Update counter map
     if(!update_counter(cpu)) {
@@ -306,7 +314,7 @@ int  percpu_array_lookup(struct xdp_md *ctx)
 SEC("xdp")
 int  common_array_lookup_same_keys(struct xdp_md *ctx)
 {
-    int cpu = bpf_get_smp_processor_id();
+    int cpu = get_and_check_cpu_id();
 
     // Update counter map
     if(!update_counter(cpu)) {
@@ -332,7 +340,7 @@ SEC("xdp")
 int  simply_drop(struct xdp_md *ctx)
 {
 
-    int cpu = bpf_get_smp_processor_id();
+    int cpu = get_and_check_cpu_id();
 
     /*void *data_end = (void *)(long)ctx->data_end;
     void *data = (void *)(long)ctx->data;
@@ -436,7 +444,7 @@ static __always_inline __u64 lookup_map_of_maps_queue (int key, __u64 counter/*,
 SEC("xdp")
 int  map_of_maps_queue(struct xdp_md *ctx)
 {
-    int cpu = bpf_get_smp_processor_id();
+    int cpu = get_and_check_cpu_id();
 
     // Update counter map
     __u64 counter = update_counter(cpu);
@@ -482,7 +490,7 @@ static __always_inline int lookup_map_of_maps_array (int key) {
 SEC("xdp")
 int map_of_maps_array(struct xdp_md *ctx)
 {
-    int cpu = bpf_get_smp_processor_id();
+    int cpu = get_and_check_cpu_id();
 
     if(!update_counter(cpu)) {
         bpf_printk("Error while looking up counter map\n");
@@ -509,7 +517,7 @@ int gets_cpu_id (struct xdp_md *ctx)
     __u64 arrival_time = bpf_ktime_get_ns();
     // Loop of 10, 20, 50
     for(int i = 0; i < 50; i++)
-        cpu = bpf_get_smp_processor_id();
+        cpu = get_and_check_cpu_id();
 
     __u64 finish_time = bpf_ktime_get_ns();
 
@@ -549,7 +557,7 @@ static __always_inline int lookup_lock_map (int key) {
 SEC("xdp")
 int  lock_map(struct xdp_md *ctx)
 {
-    int cpu = bpf_get_smp_processor_id();
+    int cpu = get_and_check_cpu_id();
 
     // Update counter map
     if(!update_counter(cpu)) {
@@ -610,7 +618,7 @@ static __always_inline int lookup_map_of_maps_hash (__u64 key) {
 SEC("xdp")
 int map_of_maps_hash(struct xdp_md *ctx)
 {
-    __u64 cpu = bpf_get_smp_processor_id();
+    int cpu = get_and_check_cpu_id();
 
     if(!update_counter(cpu)) {
         bpf_printk("Error while looking up counter map\n");
@@ -632,7 +640,7 @@ int map_of_maps_hash(struct xdp_md *ctx)
 SEC("xdp")
 int  common_hash_map(struct xdp_md *ctx)
 {
-    int cpu = bpf_get_smp_processor_id();
+    int cpu = get_and_check_cpu_id();
 
     // Update counter map
     if(!update_counter(cpu)) {
