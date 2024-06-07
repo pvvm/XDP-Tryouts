@@ -296,14 +296,17 @@ void check_hash_MoM(int hash_map_of_maps_fd) {
 	int inner_fd;
 	struct hash_key key;
 	__u64 sum = 0;
-
+	__u64 old_value = 0;
 	for(int i = 0; i < MAX_NUMBER_CORES; i++) {
 		key.cpu = i;
 		bpf_map_lookup_elem(hash_map_of_maps_fd, &key, &inner_id);
 		inner_fd = bpf_map_get_fd_by_id(inner_id);
 		bpf_map_lookup_elem(inner_fd, &i, &elem);
+		if(elem.value == old_value) 
+        	elem.value = 0;
 		printf("Counter of CPU %d: %llu\n", key.cpu, elem.value);
 		sum += elem.value;
+		old_value = elem.value;
 	}
 	printf("Total: %llu\n\n", sum);
 }
@@ -312,11 +315,15 @@ void print_hash_maps(int map_fd) {
 	struct map_elem elem;
 	__u64 sum = 0;
 	struct hash_key key;
+	__u64 old_value = 0;
 	for(int i = 0; i < MAX_NUMBER_CORES; i++) {
 		key.cpu = i;
 		bpf_map_lookup_elem(map_fd, &key, &elem);
+		if(elem.value == old_value)
+        	elem.value = 0;
 		printf("Counter of CPU %d: %llu\n", key.cpu, elem.value);
 		sum += elem.value;
+		old_value = elem.value;
 	}
 	printf("Total: %llu\n\n", sum);
 }

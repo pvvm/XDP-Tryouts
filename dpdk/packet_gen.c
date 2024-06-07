@@ -23,8 +23,8 @@
 #define MBUF_CACHE_SIZE 250
 #define BURST_SIZE 32
 
-#define TOTAL_RCV_CPU 8
-#define SRC_PORT_LIST {1, 17, 25, 9, 8, 24, 16, 3}
+#define TOTAL_RCV_CPU 16
+#define SRC_PORT_LIST {8, 20, 12, 16, 10, 2, 14, 35, 28, 11, 5, 42, 3, 22, 7, 4}
 
 #define MAX_SEND_CPU 8
 
