@@ -23,7 +23,7 @@ static const char *__doc__ = "XDP loader and stats program\n"
 #include "../common/common_params.h"
 #include "../common/common_user_bpf_xdp.h"
 
-#define MAX_NUMBER_CORES 8
+#define MAX_NUMBER_CORES 16
 
 struct map_locked_value {
     __u64 value;
@@ -156,10 +156,10 @@ static int __check_map_fd_info(int map_fd, struct bpf_map_info *info,
 void map_rate_printer(int counter_map_fd, int time_map_fd) {
 	__u64 diff_latency;
 	double curr_latency;
-	__u64 last_latency[MAX_NUMBER_CORES] = {0, 0, 0, 0, 0, 0, 0, 0};
+	__u64 last_latency[MAX_NUMBER_CORES] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
 	__u64 curr_number_pkts = 0;
-	__u64 last_number_pkts[MAX_NUMBER_CORES] = {0, 0, 0, 0, 0, 0, 0, 0};
+	__u64 last_number_pkts[MAX_NUMBER_CORES] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 	__u64 diff_packets = 0;
 
 	int div_counter = 0;
@@ -213,10 +213,10 @@ void map_rate_printer(int counter_map_fd, int time_map_fd) {
 			} else {
 				if(last_latency[key] == 0) {
 					curr_latency = ((double) diff_latency) / curr_number_pkts;
-					curr_throughput = ((double) curr_number_pkts) * 1500 * 8 / 1000000000;
+					curr_throughput = ((double) curr_number_pkts) * 1500 * MAX_NUMBER_CORES / 1000000000;
 				} else {
 					curr_latency = (((double) diff_latency) - ((double)last_latency[key])) / diff_packets;
-					curr_throughput = ((double) diff_packets) * 1500 * 8 / 1000000000;
+					curr_throughput = ((double) diff_packets) * 1500 * MAX_NUMBER_CORES / 1000000000;
 				}
 				div_counter++;
 			}

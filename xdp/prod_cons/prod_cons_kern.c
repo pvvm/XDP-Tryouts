@@ -15,7 +15,7 @@
 #define MAX_QUEUE_LEN 15
 #define NUMBER_EVENTS_PROC_PER_PACKET 5
 
-//int inner_index[10] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+int inner_index[10] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
 struct map_elem {
     __u64 occupied;
@@ -107,6 +107,8 @@ int testing_prod_cons(struct xdp_md *ctx)
     if(cpu == 0)
         inner_index[0] = inner_index[0] + 1;
     */
+    if(cpu >= 0 && cpu <= 7)
+        inner_index[cpu]  = inner_index[cpu] + 1;
 
     struct hash_key key;
     key.cpu = cpu;
@@ -135,7 +137,7 @@ int testing_prod_cons(struct xdp_md *ctx)
             return XDP_DROP;
         }
 
-        if(!inner_elem->occupied) {
+        if(!__sync_fetch_and_or(&inner_elem->occupied, 0)/*!inner_elem->occupied*/) {
             bpf_printk("Queue of CPU %d is empty", cpu);
             break;
         }
