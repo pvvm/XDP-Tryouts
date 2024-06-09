@@ -10,7 +10,7 @@
 
 #include "../common/parsing_helpers.h"
 
-#define MAX_NUMBER_CORES 16
+#define MAX_NUMBER_CORES 20
 
 struct map_locked_value {
     __u64 value;
@@ -32,7 +32,8 @@ struct inner_map_array {
 } inner_map_array0 SEC(".maps"), inner_map_array1 SEC(".maps"), inner_map_array2 SEC(".maps"), inner_map_array3 SEC(".maps"),
 inner_map_array4 SEC(".maps"), inner_map_array5 SEC(".maps"), inner_map_array6 SEC(".maps"), inner_map_array7 SEC(".maps"),
 inner_map_array8 SEC(".maps"), inner_map_array9 SEC(".maps"), inner_map_array10 SEC(".maps"), inner_map_array11 SEC(".maps"),
-inner_map_array12 SEC(".maps"), inner_map_array13 SEC(".maps"), inner_map_array14 SEC(".maps"), inner_map_array15 SEC(".maps");
+inner_map_array12 SEC(".maps"), inner_map_array13 SEC(".maps"), inner_map_array14 SEC(".maps"), inner_map_array15 SEC(".maps"),
+inner_map_array16 SEC(".maps"), inner_map_array17 SEC(".maps"), inner_map_array18 SEC(".maps"), inner_map_array19 SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
@@ -43,7 +44,8 @@ struct {
     .values = {&inner_map_array0, &inner_map_array1, &inner_map_array2, &inner_map_array3,
     &inner_map_array4, &inner_map_array5, &inner_map_array6, &inner_map_array7,
     &inner_map_array8, &inner_map_array9, &inner_map_array10, &inner_map_array11,
-    &inner_map_array12, &inner_map_array13, &inner_map_array14, &inner_map_array15}
+    &inner_map_array12, &inner_map_array13, &inner_map_array14, &inner_map_array15,
+    &inner_map_array16, &inner_map_array17, &inner_map_array18, &inner_map_array19}
 };
 
 struct inner_map_queue {
@@ -53,7 +55,8 @@ struct inner_map_queue {
 } inner_map_queue0 SEC(".maps"), inner_map_queue1 SEC(".maps"), inner_map_queue2 SEC(".maps"), inner_map_queue3 SEC(".maps"),
 inner_map_queue4 SEC(".maps"), inner_map_queue5 SEC(".maps"), inner_map_queue6 SEC(".maps"), inner_map_queue7 SEC(".maps"),
 inner_map_queue8 SEC(".maps"), inner_map_queue9 SEC(".maps"), inner_map_queue10 SEC(".maps"), inner_map_queue11 SEC(".maps"),
-inner_map_queue12 SEC(".maps"), inner_map_queue13 SEC(".maps"), inner_map_queue14 SEC(".maps"), inner_map_queue15 SEC(".maps");
+inner_map_queue12 SEC(".maps"), inner_map_queue13 SEC(".maps"), inner_map_queue14 SEC(".maps"), inner_map_queue15 SEC(".maps"),
+inner_map_queue16 SEC(".maps"), inner_map_queue17 SEC(".maps"), inner_map_queue18 SEC(".maps"), inner_map_queue19 SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
@@ -64,7 +67,8 @@ struct {
     .values = {&inner_map_queue0, &inner_map_queue1, &inner_map_queue2, &inner_map_queue3,
     &inner_map_queue4, &inner_map_queue5, &inner_map_queue6, &inner_map_queue7,
     &inner_map_queue8, &inner_map_queue9, &inner_map_queue10, &inner_map_queue11,
-    &inner_map_queue12, &inner_map_queue13, &inner_map_queue14, &inner_map_queue15}
+    &inner_map_queue12, &inner_map_queue13, &inner_map_queue14, &inner_map_queue15,
+    &inner_map_queue16, &inner_map_queue17, &inner_map_queue18, &inner_map_queue19}
 };
 
 struct {
@@ -120,7 +124,8 @@ inner_array_hash3 SEC(".maps"), inner_array_hash4 SEC(".maps"), inner_array_hash
 inner_array_hash6 SEC(".maps"), inner_array_hash7 SEC(".maps"), inner_array_hash8 SEC(".maps"),
 inner_array_hash9 SEC(".maps"), inner_array_hash10 SEC(".maps"), inner_array_hash11 SEC(".maps"),
 inner_array_hash12 SEC(".maps"), inner_array_hash13 SEC(".maps"), inner_array_hash14 SEC(".maps"),
-inner_array_hash15 SEC(".maps");
+inner_array_hash15 SEC(".maps"), inner_array_hash16 SEC(".maps"), inner_array_hash17 SEC(".maps"),
+inner_array_hash18 SEC(".maps"), inner_array_hash19 SEC(".maps");
 
 struct outer_map_hash {
     __uint(type, BPF_MAP_TYPE_HASH_OF_MAPS);
@@ -134,7 +139,8 @@ struct outer_map_hash {
         [6] = &inner_array_hash6, [7] = &inner_array_hash7, [8] = &inner_array_hash8,
         [9] = &inner_array_hash9, [10] = &inner_array_hash10, [11] = &inner_array_hash11,
         [12] = &inner_array_hash12, [13] = &inner_array_hash13, [14] = &inner_array_hash14,
-        [15] = &inner_array_hash15,
+        [15] = &inner_array_hash15, [16] = &inner_array_hash16, [17] = &inner_array_hash17,
+        [18] = &inner_array_hash18, [19] = &inner_array_hash19,
     },
 };
 
