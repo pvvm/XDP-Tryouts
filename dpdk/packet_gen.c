@@ -23,8 +23,8 @@
 #define MBUF_CACHE_SIZE 250
 #define BURST_SIZE 32
 
-#define TOTAL_RCV_CPU 16
-#define SRC_PORT_LIST {8, 20, 12, 16, 10, 2, 14, 35, 28, 11, 5, 42, 3, 22, 7, 4}
+#define TOTAL_RCV_CPU 20
+#define SRC_PORT_LIST {8, 20, 12, 16, 10, 2, 14, 35, 28, 11, 5, 42, 3, 22, 7, 4, 1, 9, 43, 6}
 
 #define MAX_SEND_CPU 8
 
@@ -232,7 +232,7 @@ void fill_tcp_header(struct rte_tcp_hdr *tcp, int source_port, struct rte_ipv4_h
  * Returns the number of packets that should be allocated in the next call
  */
 
-int send_tcp_packet(int port_id, int num_rcv_cpus, int num_pkts_create, struct rte_mempool *mbuf_pool, struct rte_mbuf **pkt) {
+int send_tcp_packet(int port_id, int num_rcv_cpus, int num_pkts_create, struct rte_mempool *mbuf_pool, struct rte_mbuf **pkt, int *src_port_counter) {
 
 	int src_port_list[TOTAL_RCV_CPU] = SRC_PORT_LIST;
 	int src_port;
@@ -260,12 +260,15 @@ int send_tcp_packet(int port_id, int num_rcv_cpus, int num_pkts_create, struct r
 		struct rte_ipv4_hdr *ip_hdr = rte_pktmbuf_mtod_offset(pkt[i], struct rte_ipv4_hdr *, ether_hdr_len);
 		struct rte_tcp_hdr *tcp_hdr = rte_pktmbuf_mtod_offset(pkt[i], struct rte_tcp_hdr *, ipv4_ether_hdr_len);
 
-		src_port = src_port_list[i % num_rcv_cpus];
+		*src_port_counter = *src_port_counter % num_rcv_cpus;
+		src_port = src_port_list[*src_port_counter];
 
 		// Fills each one of the headers
 		fill_eth_header(eth_hdr, port_id);
 		fill_ip_header(ip_hdr, total_header_len - ether_hdr_len);
 		fill_tcp_header(tcp_hdr, src_port, ip_hdr);
+
+		*src_port_counter += 1;
 	}
 
 	// Pushes the array of packets to the transmission queue, returning the number of pushed packets
@@ -297,12 +300,13 @@ int packet_gen(void *arg) {
 	struct rte_mempool* mbuf_pool = arguments->mbuf_pool;
 	uint16_t port_id = arguments->port_id;
 	int num_pkt_create = BURST_SIZE;
+	int src_port_counter = 0;
 
 	struct rte_mbuf *pkt[BURST_SIZE];
 	for (;;) {
 		if(stop_flag)
 			break;
-		num_pkt_create = send_tcp_packet(port_id, num_cpu, num_pkt_create, mbuf_pool, pkt);
+		num_pkt_create = send_tcp_packet(port_id, num_cpu, num_pkt_create, mbuf_pool, pkt, &src_port_counter);
         }
 
 	return 0;
@@ -361,8 +365,8 @@ main(int argc, char *argv[])
 
 	uint64_t time = rte_get_timer_cycles();
 	int num_cpu;
-        printf("Number of CPUs on the rcv side: ");
-        if (scanf("%d", &num_cpu) > 0) {
+    printf("Number of CPUs on the rcv side: ");
+    if (scanf("%d", &num_cpu) > 0) {
 		/* Initializes execution of threads that generate packets in other cores */
 		RTE_LCORE_FOREACH(lcore_id) {
 			struct packet_gen_args args = {num_cpu, mbuf_pool[lcore_id], portid};
@@ -373,12 +377,13 @@ main(int argc, char *argv[])
 		if(rte_lcore_id() == 0) {
 			struct rte_mbuf *pkt[BURST_SIZE];
 			int num_pkt_create = BURST_SIZE;
+			int src_port_counter = 0;
 			for(;;) {
 				check_stop();
 				if(stop_flag)
 					break;
 				time = rate_printer(time, &rate_sum, &iter_counter);
-				num_pkt_create = send_tcp_packet(portid, num_cpu, num_pkt_create, mbuf_pool[0], pkt);
+				num_pkt_create = send_tcp_packet(portid, num_cpu, num_pkt_create, mbuf_pool[0], pkt, &src_port_counter);
 			}
 		}
 	}
