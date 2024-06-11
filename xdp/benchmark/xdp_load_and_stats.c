@@ -24,6 +24,7 @@ static const char *__doc__ = "XDP loader and stats program\n"
 #include "../common/common_user_bpf_xdp.h"
 
 #define MAX_NUMBER_CORES 20
+#define LEN_ARRAY 10
 
 struct map_locked_value {
     __u64 value;
@@ -38,8 +39,13 @@ struct hash_key {
     int cpu;
 };
 
+struct testing_array {
+    __u64 value[LEN_ARRAY];
+};
+
 static const char *default_filename = "xdp_prog_kern.o";
 
+// "hash_elem_contains_array"
 // "map_of_maps_hash"
 // "common_hash_map"
 // "lock_map"
@@ -50,7 +56,7 @@ static const char *default_filename = "xdp_prog_kern.o";
 // "percpu_array_lookup"
 // "common_array_lookup_same_keys"
 // "simply_drop"
-static const char *default_progname = "common_hash_map";
+static const char *default_progname = "hash_elem_contains_array";
 
 
 static const struct option_wrapper long_options[] = {
@@ -290,6 +296,21 @@ void check_arrays(struct xdp_program *program, int map_of_maps_fd) {
 	}
 }
 
+void print_hash_map_with_array(int map_fd) {
+	struct testing_array elem;
+
+	__u64 sum = 0;
+	struct hash_key key;
+	for(int i = 0; i < MAX_NUMBER_CORES; i++) {
+		key.cpu = i;
+		if(bpf_map_lookup_elem(map_fd, &key, &elem) < 0)
+			elem.value[0] = 0;
+		printf("Counter of CPU %d: %llu\n", key.cpu, elem.value[0]);
+		sum += elem.value[0];
+	}
+	printf("Total: %llu\n\n", sum);
+}
+
 void check_hash_MoM(int hash_map_of_maps_fd) {
 	struct map_elem elem;
 	int inner_id;
@@ -397,6 +418,7 @@ int main(int argc, char **argv)
 	int percpu_map_fd;
 	int counter_map_fd;
 	int time_map_fd;
+	int hash_map_with_array_fd;
 	char errmsg[1024];
 	int err;
 
@@ -445,6 +467,11 @@ int main(int argc, char **argv)
 	}
 
 	/* Lesson#3: Locate map file descriptor */
+	hash_map_with_array_fd = find_map_fd(xdp_program__bpf_obj(program), "hash_elem_with_array");
+	if (hash_map_with_array_fd < 0) {
+		return EXIT_FAIL_BPF;
+	}
+
 	hash_map_fd = find_map_fd(xdp_program__bpf_obj(program), "common_hash");
 	if (hash_map_fd < 0) {
 		return EXIT_FAIL_BPF;
@@ -528,7 +555,9 @@ int main(int argc, char **argv)
 
 	map_rate_printer(counter_map_fd, time_map_fd);
 
-	if(!strcmp(default_progname, "map_of_maps_hash"))
+	if(!strcmp(default_progname, "hash_elem_contains_array"))
+		print_hash_map_with_array(hash_map_with_array_fd);
+	else if(!strcmp(default_progname, "map_of_maps_hash"))
 		check_hash_MoM(map_of_maps_hash_fd);
 	else if(!strcmp(default_progname, "common_hash_map"))
 		print_hash_maps(hash_map_fd);

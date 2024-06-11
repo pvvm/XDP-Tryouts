@@ -11,6 +11,22 @@
 #include "../common/parsing_helpers.h"
 
 #define MAX_NUMBER_CORES 20
+#define LEN_ARRAY 10
+
+struct testing_array {
+    __u64 value[LEN_ARRAY];
+};
+
+struct hash_key {
+    int cpu;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, struct hash_key);
+    __type(value, struct testing_array);
+    __uint(max_entries, MAX_NUMBER_CORES);
+} hash_elem_with_array SEC(".maps");
 
 struct map_locked_value {
     __u64 value;
@@ -101,10 +117,6 @@ struct {
 
 struct map_elem {
     __u64 value;
-};
-
-struct hash_key {
-    int cpu;
 };
 
 struct {
@@ -681,5 +693,42 @@ int  common_hash_map(struct xdp_md *ctx)
 }
 
 
+SEC("xdp")
+int hash_elem_contains_array(struct xdp_md *ctx)
+{
+    int cpu = get_and_check_cpu_id();
+
+    // Update counter map
+    if(!update_counter(cpu)) {
+        bpf_printk("Error while looking up counter map");
+    }
+
+    __u64 arrival_time = bpf_ktime_get_ns();
+
+    // Lookup common map
+    //for(int i = 0; i < 100; i++) {
+        struct hash_key hash_map_key = {cpu};
+        struct testing_array *elem = bpf_map_lookup_elem(&hash_elem_with_array, &hash_map_key);
+        if(!elem) {
+            struct testing_array new_value;
+            new_value.value[0] = 0;
+            bpf_map_update_elem(&hash_elem_with_array, &hash_map_key, &new_value, BPF_NOEXIST);
+            //bpf_printk("Creating new entry in hash map");
+            elem = bpf_map_lookup_elem(&hash_elem_with_array, &hash_map_key);
+            if(!elem) {
+                bpf_printk("Error while getting entry from hash map");
+                return 0;
+            }
+        }
+        elem->value[0] += 1;
+    //}
+
+    __u64 finish_time = bpf_ktime_get_ns();
+    if(!update_time(arrival_time, finish_time, cpu)) {
+        bpf_printk("Error while looking up timer map");
+    }
+
+    return XDP_DROP;
+}
 
 char _license[] SEC("license") = "GPL";
