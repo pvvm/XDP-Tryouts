@@ -43,6 +43,11 @@ struct testing_array {
     __u64 value[LEN_ARRAY];
 };
 
+struct info {
+    __u64 latency;
+    __u64 counter;
+};
+
 static const char *default_filename = "xdp_prog_kern.o";
 
 // "hash_elem_contains_array"
@@ -56,7 +61,7 @@ static const char *default_filename = "xdp_prog_kern.o";
 // "percpu_array_lookup"
 // "common_array_lookup_same_keys"
 // "simply_drop"
-static const char *default_progname = "hash_elem_contains_array";
+static const char *default_progname = "simply_drop";
 
 
 static const struct option_wrapper long_options[] = {
@@ -159,7 +164,7 @@ static int __check_map_fd_info(int map_fd, struct bpf_map_info *info,
 	return 0;
 }
 
-void map_rate_printer(int counter_map_fd, int time_map_fd) {
+void map_rate_printer(/*int counter_map_fd, int time_map_fd*/int info_map_fd) {
 	__u64 diff_latency;
 	double curr_latency;
 	__u64 last_latency[MAX_NUMBER_CORES] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
@@ -178,9 +183,13 @@ void map_rate_printer(int counter_map_fd, int time_map_fd) {
 
 	int stop_flag = 0;
 
+	struct info benchmark_info;
+
 	for(;;) {
 		for(int key = 0; key < MAX_NUMBER_CORES; key++) {
-			bpf_map_lookup_elem(counter_map_fd, &key, &curr_number_pkts);
+			//bpf_map_lookup_elem(counter_map_fd, &key, &curr_number_pkts);
+			bpf_map_lookup_elem(info_map_fd, &key, &benchmark_info);
+			curr_number_pkts = benchmark_info.counter;
 			if(curr_number_pkts > 0) {
 				stop_flag = 1;
 				break;
@@ -201,8 +210,11 @@ void map_rate_printer(int counter_map_fd, int time_map_fd) {
 		sum_throughput = 0;
 		sum_times = 0;
 		for(int key = 0; key < MAX_NUMBER_CORES; key++) {
-			bpf_map_lookup_elem(counter_map_fd, &key, &curr_number_pkts);
-			bpf_map_lookup_elem(time_map_fd, &key, &diff_latency);
+			/*bpf_map_lookup_elem(counter_map_fd, &key, &curr_number_pkts);
+			bpf_map_lookup_elem(time_map_fd, &key, &diff_latency);*/
+			bpf_map_lookup_elem(info_map_fd, &key, &benchmark_info);
+			curr_number_pkts = benchmark_info.counter;
+			diff_latency = benchmark_info.latency;
 
 			if(first_iter_flag && curr_number_pkts > 0)
 				active_cpu++;
@@ -251,7 +263,9 @@ void map_rate_printer(int counter_map_fd, int time_map_fd) {
 
 	__u64 total_sum_pkts = 0;
 	for(int key = 0; key < MAX_NUMBER_CORES; key++) {
-		bpf_map_lookup_elem(counter_map_fd, &key, &curr_number_pkts);
+		bpf_map_lookup_elem(info_map_fd, &key, &benchmark_info);
+		curr_number_pkts = benchmark_info.counter;
+		//bpf_map_lookup_elem(counter_map_fd, &key, &curr_number_pkts);
 		total_sum_pkts += curr_number_pkts;
 	}
 
@@ -416,8 +430,9 @@ int main(int argc, char **argv)
 	int map_of_maps_queue_fd;
 	int common_map_fd;
 	int percpu_map_fd;
-	int counter_map_fd;
-	int time_map_fd;
+	/*int counter_map_fd;
+	int time_map_fd;*/
+	int info_map_fd;
 	int hash_map_with_array_fd;
 	char errmsg[1024];
 	int err;
@@ -508,7 +523,7 @@ int main(int argc, char **argv)
 		return EXIT_FAIL_BPF;
 	}
 
-	counter_map_fd = find_map_fd(xdp_program__bpf_obj(program), "counter_array");
+	/*counter_map_fd = find_map_fd(xdp_program__bpf_obj(program), "counter_array");
 	if (counter_map_fd < 0) {
 		return EXIT_FAIL_BPF;
 	}
@@ -516,19 +531,24 @@ int main(int argc, char **argv)
 	time_map_fd = find_map_fd(xdp_program__bpf_obj(program), "time_array");
 	if (counter_map_fd < 0) {
 		return EXIT_FAIL_BPF;
+	}*/
+
+	info_map_fd = find_map_fd(xdp_program__bpf_obj(program), "info_array");
+	if (info_map_fd < 0) {
+		return EXIT_FAIL_BPF;
 	}
 
-	__u64 value = 0;
+	//__u64 value = 0;
 	/*unsigned int values_array[libbpf_num_possible_cpus()];
 	for(int i = 0; i < libbpf_num_possible_cpus(); i++) {
 		values_array[i] = 0;
 	}*/
-	for(int key = 0; key < MAX_NUMBER_CORES; key++) {
+	/*for(int key = 0; key < MAX_NUMBER_CORES; key++) {
 		bpf_map_update_elem(common_map_fd, &key, &value, BPF_ANY);
 		//bpf_map_update_elem(percpu_map_fd, &key, &value, BPF_ANY);
 		bpf_map_update_elem(counter_map_fd, &key, &value, BPF_ANY);
 		bpf_map_update_elem(time_map_fd, &key, &value, BPF_ANY);
-	}
+	}*/
 	/*for(int key = 0; key < MAX_NUMBER_CORES; key++) {
 		bpf_map_update_elem(percpu_map_fd, &key, &values_array, BPF_ANY);
 	}*/
@@ -553,7 +573,7 @@ int main(int argc, char **argv)
 
 	userspace_map_access(map_of_maps_array_fd, map_of_maps_queue_fd, percpu_map_fd, program);
 
-	map_rate_printer(counter_map_fd, time_map_fd);
+	map_rate_printer(info_map_fd);
 
 	if(!strcmp(default_progname, "hash_elem_contains_array"))
 		print_hash_map_with_array(hash_map_with_array_fd);
