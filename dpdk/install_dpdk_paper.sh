@@ -61,6 +61,13 @@ sudo dpdk-devbind.py -u ${INTERFACE0_PCI}
 sudo dpdk-devbind.py -u ${INTERFACE1_PCI}
 sudo dpdk-devbind.py -b vfio-pci ${INTERFACE0_PCI} ${INTERFACE1_PCI}
 
+# If you face a problem when binding vfio-pci:
+sudo nano /etc/default/grub
+# Add intel_iommu=on to GRUB_CMDLINE_LINUX_DEFAULT
+sudo update-grub
+sudo reboot
+# And try again
+
 # Setup hugepages
 #PAGE_SIZE="2M"
 #TOTAL_SIZE="1G"
