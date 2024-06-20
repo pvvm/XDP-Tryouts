@@ -1,10 +1,13 @@
 #!/bin/bash
 
 # Define the base command
-BASE_COMMAND="sudo ethtool --config-ntuple enp59s0f1np1 flow-type tcp4 src-ip 10.7.0.7 dst-ip 10.7.0.6"
+SRC_ADDR="10.7.0.7"
+DST_ADDR="10.7.0.6"
 
-# Loop 20 times
-for i in {0..19}; do
+BASE_COMMAND="sudo ethtool --config-ntuple enp59s0f1np1 flow-type tcp4 src-ip $SRC_ADDR dst-ip $DST_ADDR"
+
+# Loop 40 times
+for i in {0..39}; do
   SRC_PORT=$i
   ACTION=$i
   COMMAND="$BASE_COMMAND src-port $SRC_PORT dst-port 123 action $ACTION"
