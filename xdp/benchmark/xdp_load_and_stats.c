@@ -61,7 +61,7 @@ static const char *default_filename = "xdp_prog_kern.o";
 // "percpu_array_lookup"
 // "common_array_lookup_same_keys"
 // "simply_drop"
-static const char *default_progname = "simply_drop";
+static const char *default_progname = "map_of_maps_array";
 
 
 static const struct option_wrapper long_options[] = {
