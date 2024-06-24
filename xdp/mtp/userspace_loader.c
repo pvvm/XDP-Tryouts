@@ -473,7 +473,7 @@ void produce_app_events(int cpu_id, int map_fd, int *inner_index) {
 	// Note: I think we should have the main thread communicating
 	// with the application. And the main thread sends the value and flow_id
 	// to each worker thread
-	struct flow_id key = {1, 2, 3, 4};
+	struct flow_id key = {cpu_id, cpu_id, cpu_id, cpu_id};
 
 	new_entry.value = cpu_id;
 
@@ -505,6 +505,8 @@ void produce_app_events(int cpu_id, int map_fd, int *inner_index) {
 	} else {
 		printf("Entry of CPU %d and index %d is already occupied\n", cpu_id, *inner_index);
 	}
+	// VERY IMPORTANT (bpf_map_get_fd_by_id keep returning an increasing value if not used)
+	close(inner_fd);
 }
 
 void * producer_and_afxdp(void *arg) {
@@ -528,8 +530,8 @@ void * producer_and_afxdp(void *arg) {
 	// Producing new app events
 	// AF_XDP packet handling
 	while(!global_exit) {
-
-		//produce_app_events(xsk_socket->cpu_id, prod_map_fd, &inner_index);
+	
+		produce_app_events(xsk_socket->cpu_id, prod_map_fd, &inner_index);
 
 		if (cfg->xsk_poll_mode) {
 			ret = poll(fds, nfds, -1);
