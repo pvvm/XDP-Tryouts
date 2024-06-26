@@ -44,6 +44,7 @@ static const char *default_filename = "xdp_prog_kern.o";
 static const char *default_progname = "simply_drop";
 
 int counter_percore[8];
+struct bpf_object *obj;
 
 
 bool stop = false;
@@ -173,6 +174,28 @@ void *thread_exec(void *arg) {
 
 	struct Argument *info = (struct Argument *) arg;
 
+	/*struct bpf_test_run_opts opts = {
+		.sz = sizeof(struct bpf_test_run_opts),
+		.data_in = info->data,
+		.data_out = info->data,
+		.data_size_in = info->data_len,
+		.data_size_out = info->data_len,
+		.repeat = 1,
+		.retval = 0,
+	};*/
+	/*LIBBPF_OPTS(bpf_test_run_opts, opts);
+	opts.data_in = info->data;
+	opts.data_out = info->data;
+	opts.data_size_in = info->data_len;
+	opts.data_size_out = info->data_len;
+
+	while(!stop) {
+		int err = bpf_prog_test_run_opts(info->prog_fd, &opts);
+		if (err != 0) {
+			printf("[error]: bpf test run failed: %d\n", err);
+		}
+	}*/
+
 	union bpf_attr run_attr = {
         .test = {
             .prog_fd = info->prog_fd,
@@ -241,9 +264,51 @@ static void exit_application(int signal)
 	}
 }
 
+struct bpf_program *load_attach_without_xdp_dispatcher(struct config *cfg)
+{
+	obj = bpf_object__open_file(cfg->filename, NULL);
+	if (libbpf_get_error(obj)) {
+        fprintf(stderr, "ERROR: opening BPF object file failed\n");
+        return NULL;
+    }
+
+	int err = bpf_object__load(obj);
+	if(err) {
+		fprintf(stderr, "ERROR: loading BPF object file failed\n");
+        bpf_object__close(obj);
+        return NULL;
+	}
+
+	// Note: if there are more than one XDP program in the kernel code,
+	// we should change to bpf_object__find_program_by_name, probably
+	struct bpf_program *prog = bpf_object__next_program(obj, NULL);
+	int prog_fd = bpf_program__fd(prog);
+    if (prog_fd < 0) {
+        fprintf(stderr, "ERROR: getting BPF program file descriptor failed\n");
+        bpf_object__close(obj);
+        return NULL;
+    }
+
+	int ifindex = cfg->ifindex;
+    if (ifindex == 0) {
+        perror("if_nametoindex");
+        bpf_object__close(obj);
+        return NULL;
+    }
+
+	err = bpf_xdp_attach(ifindex, prog_fd, 0, NULL);
+    if (err < 0) {
+        fprintf(stderr, "ERROR: attaching XDP program to interface failed: %s\n", strerror(-err));
+        bpf_object__close(obj);
+        return NULL;
+    }
+
+	return prog;
+}
+
 int main(int argc, char **argv)
 {
-	struct xdp_program *program;
+	struct bpf_program *program;
 	char errmsg[1024];
 	int err;
 
@@ -284,23 +349,24 @@ int main(int argc, char **argv)
 		return EXIT_OK;
 	}
 
-	program = load_bpf_and_xdp_attach(&cfg);
+	//program = load_bpf_and_xdp_attach(&cfg);
+	program = load_attach_without_xdp_dispatcher(&cfg);
 	if (!program)
 		return EXIT_FAIL_BPF;
 
 	if (verbose) {
 		printf("Success: Loaded BPF-object(%s) and used section(%s)\n",
 		       cfg.filename, cfg.progname);
-		printf(" - XDP prog id:%d attached on device:%s(ifindex:%d)\n",
-		       xdp_program__id(program), cfg.ifname, cfg.ifindex);
+		printf(" - XDP prog attached on device:%s(ifindex:%d)\n", cfg.ifname, cfg.ifindex);
 	}
 
-	int prog_fd = xdp_program__fd(program);
+	int prog_fd = bpf_program__fd(program);
 
-	if (prog_fd < 0)
+	if (prog_fd < 0) {
 		printf("Error: xdp_program__fd failed\n\n");
-	else
-		printf("File descriptor: %d\n\n", xdp_program__fd(program));
+		return EXIT_FAIL_BPF;
+	}else
+		printf("File descriptor: %d\n\n", bpf_program__fd(program));
 
 
 	unsigned char data[1500];  // Ensure the buffer is large enough
@@ -308,12 +374,12 @@ int main(int argc, char **argv)
     
     create_packet(data/*, &data_len*/);
 
-	int map_fd = find_map_fd(xdp_program__bpf_obj(program), "counter_array");
+	int map_fd = find_map_fd(obj, "counter_array");
 	if (map_fd < 0) {
 		return EXIT_FAIL_BPF;
 	}
 
-	int outer_map_fd = find_map_fd(xdp_program__bpf_obj(program), "outer_map_queue");
+	int outer_map_fd = find_map_fd(obj, "outer_map_queue");
 	if (outer_map_fd < 0) {
 		return EXIT_FAIL_BPF;
 	}
@@ -365,5 +431,7 @@ int main(int argc, char **argv)
 
 	printf("\n\n");
 
+
+	bpf_object__close(obj);
     return 0;
 }
