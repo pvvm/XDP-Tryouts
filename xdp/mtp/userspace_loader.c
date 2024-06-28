@@ -43,7 +43,7 @@
 
 static const char *default_filename = "kernel_xdp.o";
 
-static const char *default_progname = "xdp_sock_prog";
+static const char *default_progname = "rx_module";
 
 static struct xdp_program *prog;
 int xsk_map_fd;
@@ -468,12 +468,12 @@ void produce_app_events(int cpu_id, int map_fd, int *inner_index) {
 	int inner_id, inner_fd, err;
 	
 	struct app_event old_entry;
-	struct app_event new_entry = {1, 0};
 
 	// Note: I think we should have the main thread communicating
 	// with the application. And the main thread sends the value and flow_id
-	// to each worker thread
+	// to each worker thread. A queue data structure maybe?
 	struct flow_id key = {cpu_id, cpu_id, cpu_id, cpu_id};
+	struct app_event new_entry = {key, 1, 0};
 
 	new_entry.value = cpu_id;
 
@@ -490,7 +490,7 @@ void produce_app_events(int cpu_id, int map_fd, int *inner_index) {
 		return;
 	}
 
-	printf("Old entry CPU %d: %lld %lld\n", cpu_id, old_entry.occupied, old_entry.value);
+	//printf("Old entry CPU %d: %lld %lld\n", cpu_id, old_entry.occupied, old_entry.value);
 
 	if(!old_entry.occupied) {
 		err = bpf_map_update_elem(inner_fd, inner_index, &new_entry, BPF_ANY);
@@ -503,7 +503,11 @@ void produce_app_events(int cpu_id, int map_fd, int *inner_index) {
 		else
 			*inner_index = 0;
 	} else {
-		printf("Entry of CPU %d and index %d is already occupied\n", cpu_id, *inner_index);
+		//printf("Entry of CPU %d and index %d is already occupied\n", cpu_id, *inner_index);
+
+		// Note: if the entry isn't occupied, we enqueue the new entry and
+		// dequeue the event + flow_id from the data structure.
+		// If not, we don't dequeue and in the next time this function is called we try again
 	}
 	// VERY IMPORTANT (bpf_map_get_fd_by_id keep returning an increasing value if not used)
 	close(inner_fd);
@@ -529,6 +533,29 @@ void * producer_and_afxdp(void *arg) {
 	// BPF_PROG_RUN for the first event
 	// Producing new app events
 	// AF_XDP packet handling
+
+	unsigned char data[1500];
+	char buf[1500];
+	struct test teste;
+	teste.value = xsk_socket->cpu_id;
+	memcpy(data, &teste, sizeof(teste));
+
+	LIBBPF_OPTS(bpf_test_run_opts, opts);
+	opts.data_in = data;
+	//opts.data_out = buf;
+	opts.data_size_in = 1500;
+	//opts.data_size_out = 1500;
+	opts.flags = (1U << 1);
+
+	int err = xdp_program__test_run(prog, &opts, 0);
+	if (err != 0) {
+		printf("[error]: bpf test run failed: %d\n", err);
+	}
+
+	struct test retorno;
+	memcpy(&retorno, buf, sizeof(retorno));
+	printf("%d\n", retorno.value);
+
 	while(!global_exit) {
 	
 		produce_app_events(xsk_socket->cpu_id, prod_map_fd, &inner_index);

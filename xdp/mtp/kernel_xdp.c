@@ -38,7 +38,7 @@ inner_app_array16 SEC(".maps"), inner_app_array17 SEC(".maps"), inner_app_array1
 
 struct outer_app_hash {
     __uint(type, BPF_MAP_TYPE_HASH_OF_MAPS);
-    __type(key, struct hash_key);
+    __type(key, struct flow_id);
     __uint(max_entries, MAX_NUMBER_FLOWS);
     __array(values, struct inner_app_array);
 } outer_app_hash SEC(".maps") = {
@@ -50,8 +50,22 @@ struct outer_app_hash {
     },
 };
 
+struct timer_event {
+    int value;
+    int index;
+    struct bpf_timer timer;
+    //struct xdp_md *packet;
+};
 
-static __always_inline int parse_packet(struct xdp_md *ctx) {
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __type(key, __u32);
+    __type(value, struct timer_event);
+    __uint(max_entries, MAX_NUMBER_CORES);
+} timer_array SEC(".maps");
+
+
+static __always_inline int parse_packet(struct xdp_md *ctx, struct net_event *net_ev) {
     void *data_end = (void *)(long)ctx->data_end;
     void *data     = (void *)(long)ctx->data;
 
@@ -93,61 +107,143 @@ static __always_inline int parse_packet(struct xdp_md *ctx) {
         return 0;
     }
 
-    unsigned char src_ip[4];
-    //unsigned char dst_ip[4];
     __be32 saddr = iphdr->saddr; 
+    __u8 src_ip;
+    src_ip = saddr & 0xFF;
+    src_ip = ((saddr >> 8) & 0xFF) ^ src_ip;
+    src_ip = ((saddr >> 16) & 0xFF) ^ src_ip;
+    src_ip = ((saddr >> 24) & 0xFF) ^ src_ip;
+    net_ev->ev_flow_id.src_ip = src_ip;
+    //bpf_printk("\nSource IP XOR: %d", src_ip);
+
     ////bpf_printk("\nsaddr: %d", saddr);
+    /*unsigned char src_ip[4];
     src_ip[0] = saddr & 0xFF;
     src_ip[1] = (saddr >> 8) & 0xFF;
     src_ip[2] = (saddr >> 16) & 0xFF;
-    src_ip[3] = (saddr >> 24) & 0xFF;
+    src_ip[3] = (saddr >> 24) & 0xFF;*/
 
-    unsigned char dst_ip[4];
-    //unsigned char dst_ip[4];
     __be32 daddr = iphdr->daddr;
-    ////bpf_printk("\ndaddr: %d", daddr);
+    __u8 dst_ip;
+    dst_ip = daddr & 0xFF;
+    dst_ip = ((daddr >> 8) & 0xFF) ^ dst_ip;
+    dst_ip = ((daddr >> 16) & 0xFF) ^ dst_ip;
+    dst_ip = ((daddr >> 24) & 0xFF) ^ dst_ip;
+    net_ev->ev_flow_id.dest_ip = dst_ip;
+
+    //bpf_printk("\nDestination IP XOR: %d", dst_ip);
+    /*unsigned char dst_ip[4];
+    bpf_printk("\ndaddr: %d", daddr);
     dst_ip[0] = daddr & 0xFF;
     dst_ip[1] = (daddr >> 8) & 0xFF;
     dst_ip[2] = (daddr >> 16) & 0xFF;
-    dst_ip[3] = (daddr >> 24) & 0xFF;
+    dst_ip[3] = (daddr >> 24) & 0xFF;*/
     
-    //bpf_printk("\nSource IP p1: %d.%d", src_ip[0], src_ip[1]);
-    //bpf_printk("\nSource IP p2: %d.%d", src_ip[2], src_ip[3]);
-    //bpf_printk("\nDestination IP p1: %d.%d", dst_ip[0], dst_ip[1]);
-    //bpf_printk("\nDestination IP p2: %d.%d", dst_ip[2], dst_ip[3]);
+    /*bpf_printk("\nSource IP p1: %d.%d", src_ip[0], src_ip[1]);
+    bpf_printk("\nSource IP p2: %d.%d", src_ip[2], src_ip[3]);
+    bpf_printk("\nDestination IP p1: %d.%d", dst_ip[0], dst_ip[1]);
+    bpf_printk("\nDestination IP p2: %d.%d", dst_ip[2], dst_ip[3]);*/
     
     if(parse_tcphdr(&nh, data_end, &tcph) ==  -1) {
         //bpf_printk("\nDropped at TCP\n\n");
         return 0;
     }
 
-    bpf_printk("\nDestination port: %d\n\n", bpf_ntohs(tcph->dest));
-    tcph->dest = bpf_htons(bpf_ntohs(tcph->dest) - 1);
+    __be16 sport = bpf_ntohs(tcph->source);
+    __u8 src_port;
+    src_port = sport & 0xFF;
+    src_port = ((sport >> 8) & 0xFF) ^ src_port;
+    net_ev->ev_flow_id.src_port = src_port;
+
+    __be16 dport = bpf_ntohs(tcph->dest);
+    __u8 dst_port;
+    dst_port = dport & 0xFF;
+    dst_port = ((dport >> 8) & 0xFF) ^ dst_port;
+    net_ev->ev_flow_id.dest_port = dst_port;
+    
+    /*bpf_printk("\nDestination port: %d\n\n", num);
+    tcph->dest = bpf_htons(bpf_ntohs(tcph->dest) - 1);*/
 
     //bpf_printk("\nSource port: %d", bpf_ntohs(tcph->source));
-    bpf_printk("\nDestination port: %d\n\n", bpf_ntohs(tcph->dest));
+    //bpf_printk("\nDestination port: %d\n\n", bpf_ntohs(tcph->dest));
 
     return 1;
 }
 
-SEC("xdp")
-int xdp_sock_prog(struct xdp_md *ctx)
-{
-    int index = ctx->rx_queue_index;
+static int timer_triggered(void *map, __u32 *key, struct timer_event *val) {
+    bpf_printk("CPU: %d", *key);
+    return 0;
+}
 
-    if(!parse_packet(ctx))
+static __always_inline int initialize_timer(int cpu) {
+    struct timer_event *map_entry;
+
+    map_entry = bpf_map_lookup_elem(&timer_array, &cpu);
+    if(!map_entry) {
+        bpf_printk("Couldn't get entry of the map");
+        return -1;
+    }
+
+    long int i = bpf_timer_init(&map_entry->timer, &timer_array, CLOCK_BOOTTIME);
+    if(i != 0) {
+        bpf_printk("Error while initializing timer: %ld", i);
+    }
+
+    // Sets the function to be called after the timer triggers
+    i = bpf_timer_set_callback(&map_entry->timer, timer_triggered);
+    if(i != 0) {
+        bpf_printk("Error while setting callback: %ld", i);
+    }
+
+    // Starts the timer for 1 second
+    bpf_timer_start(&map_entry->timer, ONE_SEC, 0);
+
+    return 0;
+}
+
+/*static __always_inline int modify_fake_packet(struct xdp_md *ctx) {
+    void *data_end = (void *)(long)ctx->data_end;
+    void *data     = (void *)(long)ctx->data;
+
+    void* pos = data;
+
+    struct test *teste = pos;
+    if (teste + 1 > data_end)
+		return -1;
+
+    pos = teste + 1;
+    teste = data;
+    teste->value = teste->value + 1;
+
+    return 0;
+}*/
+
+SEC("xdp")
+int rx_module(struct xdp_md *ctx)
+{
+    int rx_queue_index = ctx->rx_queue_index;
+    struct net_event net_ev;
+
+    if(!parse_packet(ctx, &net_ev))
         return XDP_DROP;
+
+    //scheduler();
+
+    //modify_fake_packet(ctx);
 
     /* A set entry here means that the correspnding queue_id
      * has an active AF_XDP socket bound to it. */
-    int cpu = bpf_get_smp_processor_id();
+    /*int cpu = bpf_get_smp_processor_id();
+
+    initialize_timer(cpu);
 
     if (bpf_map_lookup_elem(&xsks_map, &index)) {
         bpf_printk("TEST %d %d", cpu, index);
         return bpf_redirect_map(&xsks_map, index, 0);
 	}
 
-    return XDP_PASS;
+    return XDP_PASS;*/
+    return XDP_DROP;
 }
 
 char _license[] SEC("license") = "GPL";
