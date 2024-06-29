@@ -5,6 +5,13 @@
 #define MAX_NUMBER_FLOWS 20
 #define MAX_EVENT_QUEUE_LEN 100
 
+enum event_type {
+    APP_EVENT,
+    NET_EVENT,
+    TIMER_EVENT,
+    PROG_EVENT
+};
+
 struct flow_id {
     __u8 src_ip;
     __u8 src_port;
@@ -24,10 +31,34 @@ struct app_event {
 
 struct net_event {
     struct flow_id ev_flow_id;
-    __u32 rx_queue_index;
     __u64 value;
 };
 
+struct timer_event {
+    struct flow_id ev_flow_id;
+    __u64 value;
+};
+
+struct prog_event {
+    struct flow_id ev_flow_id;
+    __u64 value;
+};
+
+struct timer_trigger {
+    struct flow_id ev_flow_id;
+    __u64 value;
+    struct bpf_timer timer;
+    //struct xdp_md *packet;
+};
+
+struct queue_head_tail {
+    __u32 net_head;
+    __u32 net_tail;
+    __u32 timer_head;
+    __u32 timer_tail;
+    __u32 prog_head;
+    __u32 prog_tail;
+};
 
 struct test {
     int value;

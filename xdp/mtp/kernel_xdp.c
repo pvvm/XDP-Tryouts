@@ -18,12 +18,16 @@
 #define ONE_SEC 1000000000
 #define TEN_SEC 10000000000
 
+/*--------------- XSK MAP ---------------*/
+
 struct {
 	__uint(type, BPF_MAP_TYPE_XSKMAP);
 	__type(key, __u32);
 	__type(value, __u32);
 	__uint(max_entries, MAX_NUMBER_CORES);
 } xsks_map SEC(".maps");
+
+/*--------------- APP EVENT MAPS ---------------*/
 
 struct inner_app_array {
     __uint(type, BPF_MAP_TYPE_ARRAY);
@@ -50,20 +54,51 @@ struct outer_app_hash {
     },
 };
 
-struct timer_event {
-    int value;
-    int index;
-    struct bpf_timer timer;
-    //struct xdp_md *packet;
+/*--------------- SHARED HEAD TAIL MAP ---------------*/
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, struct flow_id);
+    __type(value, struct queue_head_tail);
+    __uint(max_entries, MAX_EVENT_QUEUE_LEN);
+} head_tail_hash SEC(".maps");
+
+
+/*--------------- NET EVENT MAPS ---------------*/
+
+struct inner_net_array {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __type(key, __u32);
+    __type(value, struct net_event);
+    __uint(max_entries, MAX_EVENT_QUEUE_LEN);
+} inner_net_array0 SEC(".maps"), inner_net_array1 SEC(".maps"), inner_net_array2 SEC(".maps"), inner_net_array3 SEC(".maps"),
+inner_net_array4 SEC(".maps"), inner_net_array5 SEC(".maps"), inner_net_array6 SEC(".maps"), inner_net_array7 SEC(".maps"),
+inner_net_array8 SEC(".maps"), inner_net_array9 SEC(".maps"), inner_net_array10 SEC(".maps"), inner_net_array11 SEC(".maps"),
+inner_net_array12 SEC(".maps"), inner_net_array13 SEC(".maps"), inner_net_array14 SEC(".maps"), inner_net_array15 SEC(".maps"),
+inner_net_array16 SEC(".maps"), inner_net_array17 SEC(".maps"), inner_net_array18 SEC(".maps"), inner_net_array19 SEC(".maps");
+
+struct outer_net_hash {
+    __uint(type, BPF_MAP_TYPE_HASH_OF_MAPS);
+    __type(key, __u32);
+    __uint(max_entries, MAX_NUMBER_FLOWS);
+    __array(values, struct inner_net_array);
+} outer_net_hash SEC(".maps") = {
+    .values = {
+        &inner_net_array0, &inner_net_array1, &inner_net_array2, &inner_net_array3, &inner_net_array4,
+        &inner_net_array5, &inner_net_array6, &inner_net_array7, &inner_net_array8, &inner_net_array9,
+        &inner_net_array10, &inner_net_array11, &inner_net_array12, &inner_net_array13, &inner_net_array14,
+        &inner_net_array15, &inner_net_array16, &inner_net_array17, &inner_net_array18, &inner_net_array19,
+    },
 };
+
+/*--------------- TIMER TRIGGER MAP ---------------*/
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __type(key, __u32);
-    __type(value, struct timer_event);
+    __type(value, struct timer_trigger);
     __uint(max_entries, MAX_NUMBER_CORES);
 } timer_array SEC(".maps");
-
 
 static __always_inline int parse_packet(struct xdp_md *ctx, struct net_event *net_ev) {
     void *data_end = (void *)(long)ctx->data_end;
@@ -170,13 +205,13 @@ static __always_inline int parse_packet(struct xdp_md *ctx, struct net_event *ne
     return 1;
 }
 
-static int timer_triggered(void *map, __u32 *key, struct timer_event *val) {
+static int timer_triggered(void *map, __u32 *key, struct timer_trigger *val) {
     bpf_printk("CPU: %d", *key);
     return 0;
 }
 
 static __always_inline int initialize_timer(int cpu) {
-    struct timer_event *map_entry;
+    struct timer_trigger *map_entry;
 
     map_entry = bpf_map_lookup_elem(&timer_array, &cpu);
     if(!map_entry) {
@@ -218,6 +253,76 @@ static __always_inline int initialize_timer(int cpu) {
     return 0;
 }*/
 
+static __always_inline struct queue_head_tail * find_head_tail(struct flow_id ev_flow_id) {
+    struct queue_head_tail *ht_info = bpf_map_lookup_elem(&head_tail_hash, &ev_flow_id);
+    if(!ht_info) {
+        struct queue_head_tail new_ht_info = {0, 0, 0, 0, 0, 0};
+        bpf_map_update_elem(&head_tail_hash, &ev_flow_id, &new_ht_info, BPF_NOEXIST);
+        //bpf_printk("Creating new entry in hash map");
+        ht_info = bpf_map_lookup_elem(&head_tail_hash, &ev_flow_id);
+        if(!ht_info)
+            return NULL;
+        return ht_info;
+    }
+    //bpf_printk("Found entry in hash map");
+    return ht_info;
+}
+
+static __always_inline void event_enqueue(void * event, enum event_type type) {
+    if(type == APP_EVENT) {
+        bpf_printk("APP_EVENT");
+       //struct app_event enq_event = *(struct app_event *) event;
+    } else if(type == NET_EVENT) {
+        bpf_printk("NET_EVENT");
+        struct net_event enq_event = *(struct net_event *) event;
+        struct queue_head_tail *ht_info = find_head_tail(enq_event.ev_flow_id);
+        if(!ht_info) {
+            bpf_printk("Error while finding entry at head tail map");
+            return;
+        }
+        bpf_printk("TAIL: %d", ht_info->net_tail);
+
+        if((ht_info->net_head == 0 && ht_info->net_tail == MAX_EVENT_QUEUE_LEN - 1) ||
+            ht_info->net_head == ht_info->net_tail + 1) {
+            bpf_printk("Queue is full: unable to enqueue event");
+            return;
+        }
+
+        //struct flow_id teste = enq_event.ev_flow_id;
+        __u32 outer_key = 20;
+        struct inner_net_array *inner_array = bpf_map_lookup_elem(&outer_net_hash, &outer_key);
+        if(!inner_array) {
+            bpf_printk("Couldn't get entry from outer map");
+            return;
+        }
+
+        if(bpf_map_update_elem(inner_array, &ht_info->net_tail, &enq_event, BPF_ANY)) {
+            bpf_printk("Couldn't update entry from inner map");
+            return;
+        }
+
+        if(ht_info->net_tail < MAX_EVENT_QUEUE_LEN - 1)
+            ht_info->net_tail += 1;
+        else
+            ht_info->net_tail = 0;
+
+    } else if(type == TIMER_EVENT) {
+        bpf_printk("TIMER_EVENT");
+        //struct timer_event enq_event = *(struct timer_event *) event;
+    } else if(type == PROG_EVENT) {
+        bpf_printk("PROG_EVENT");
+        //struct prog_event enq_event = *(struct prog_event *) event;
+    }
+}
+
+static __always_inline void scheduler(void * event, enum event_type type, struct xdp_md *ctx) {
+    event_enqueue(event, type);
+
+    //struct net_event teste = *(struct net_event *) event;
+    //bpf_printk("%d %d", teste.ev_flow_id.src_ip, teste.ev_flow_id.dest_ip);
+    //bpf_printk("%d %d", teste.ev_flow_id.src_port, teste.ev_flow_id.dest_port);
+}
+
 SEC("xdp")
 int rx_module(struct xdp_md *ctx)
 {
@@ -227,22 +332,21 @@ int rx_module(struct xdp_md *ctx)
     if(!parse_packet(ctx, &net_ev))
         return XDP_DROP;
 
-    //scheduler();
+    scheduler((void *) &net_ev, NET_EVENT, ctx);
 
     //modify_fake_packet(ctx);
 
     /* A set entry here means that the correspnding queue_id
      * has an active AF_XDP socket bound to it. */
-    /*int cpu = bpf_get_smp_processor_id();
+    
+    int cpu = bpf_get_smp_processor_id();
 
     initialize_timer(cpu);
 
-    if (bpf_map_lookup_elem(&xsks_map, &index)) {
-        bpf_printk("TEST %d %d", cpu, index);
-        return bpf_redirect_map(&xsks_map, index, 0);
+    if (bpf_map_lookup_elem(&xsks_map, &rx_queue_index)) {
+        bpf_printk("TEST %d %d", cpu, rx_queue_index);
+        return bpf_redirect_map(&xsks_map, rx_queue_index, 0);
 	}
-
-    return XDP_PASS;*/
     return XDP_DROP;
 }
 
