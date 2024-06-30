@@ -3,7 +3,7 @@
 
 #define MAX_NUMBER_CORES 8
 #define MAX_NUMBER_FLOWS 20
-#define MAX_EVENT_QUEUE_LEN 100
+#define MAX_EVENT_QUEUE_LEN 10
 
 enum event_type {
     APP_EVENT,
@@ -58,6 +58,13 @@ struct queue_head_tail {
     __u32 timer_tail;
     __u32 prog_head;
     __u32 prog_tail;
+};
+
+struct flow_info {
+    __u32 len_app_queue;
+    __u32 len_net_queue;
+    __u32 len_timer_queue;
+    __u32 len_prog_queue;
 };
 
 struct test {
