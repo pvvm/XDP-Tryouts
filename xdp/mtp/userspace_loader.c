@@ -473,7 +473,7 @@ void produce_app_events(int cpu_id, int map_fd, int *inner_index) {
 	// with the application. And the main thread sends the value and flow_id
 	// to each worker thread. A queue data structure maybe?
 	struct flow_id key = {0, 0, 0, 0};
-	struct app_event new_entry = {key, 1, 0};
+	struct app_event new_entry = {APP_EVENT, key, 1, 0};
 
 	new_entry.value = cpu_id;
 

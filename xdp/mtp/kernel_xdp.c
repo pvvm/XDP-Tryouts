@@ -54,16 +54,6 @@ struct outer_app_hash {
     },
 };
 
-/*--------------- SHARED HEAD TAIL MAP ---------------*/
-
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __type(key, struct flow_id);
-    __type(value, struct queue_head_tail);
-    __uint(max_entries, MAX_EVENT_QUEUE_LEN);
-} head_tail_hash SEC(".maps");
-
-
 /*--------------- NET EVENT MAPS ---------------*/
 
 struct inner_net_array {
@@ -148,6 +138,21 @@ struct {
     __type(value, struct timer_trigger);
     __uint(max_entries, MAX_NUMBER_CORES);
 } timer_array SEC(".maps");
+
+/*--------------- CONTEXT HASH MAP ---------------*/
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, struct flow_id);
+    __type(value, struct context);
+    __uint(max_entries, MAX_NUMBER_FLOWS);
+} context_hash SEC(".maps");
+
+
+// Note: make this function more complex in the future
+static __always_inline void define_minor_type(struct net_event *net_ev) {
+    net_ev->event_type = ACK;
+}
 
 static __always_inline int parse_packet(struct xdp_md *ctx, struct net_event *net_ev) {
     void *data_end = (void *)(long)ctx->data_end;
@@ -251,6 +256,8 @@ static __always_inline int parse_packet(struct xdp_md *ctx, struct net_event *ne
     //bpf_printk("\nSource port: %d", bpf_ntohs(tcph->source));
     //bpf_printk("\nDestination port: %d\n\n", bpf_ntohs(tcph->dest));
 
+    define_minor_type(net_ev);
+
     return 1;
 }
 
@@ -301,6 +308,53 @@ static __always_inline int initialize_timer(int cpu) {
 
     return 0;
 }*/
+
+static __always_inline struct context * retrieve_ctx(struct flow_id flow) {
+    struct context *ctx = bpf_map_lookup_elem(&context_hash, &flow);
+    if(!ctx) {
+        struct context new_ctx = {0, 0 , 0};
+        bpf_map_update_elem(&context_hash, &flow, &new_ctx, BPF_NOEXIST);
+        ctx = bpf_map_lookup_elem(&context_hash, &flow);
+        if(!ctx) {
+            return NULL;
+        }
+        return ctx;
+    }
+    return ctx;
+}
+
+// Note: how can we "return" several prog events if they are created in an ep?
+static __always_inline void example_ep(void *event, struct context *ctx) {
+    
+}
+
+static __always_inline void dispatcher(void * event, enum minor_event_type type, struct flow_id flow) {
+    struct context *ctx = retrieve_ctx(flow);
+    if(!ctx) {
+        bpf_printk("dispatcher: Couldn't retrive ctx");
+        return;
+    }
+
+    switch (type)
+    {
+    case SEND:
+        bpf_printk("APP_EVENT");
+        break;
+    
+    case ACK:
+        bpf_printk("ACK");
+        example_ep(event, ctx);
+        break;
+    
+    case MISS_ACK:
+        bpf_printk("MISS_ACK");
+        break;
+    
+    default:
+        break;
+    }
+}
+
 
 static __always_inline int find_flow_info(struct flow_id ev_flow_id, int cpu_id, struct flow_info **f_info) {
     struct inner_flow_info_hash *flow_info_hash = bpf_map_lookup_elem(&outer_flow_info_array, &cpu_id);
@@ -360,7 +414,7 @@ static __always_inline int try_to_enqueue(void * map, void * event,
     return 1;
 }
 
-static __always_inline void event_enqueue(void * event, enum event_type type, int cpu_id) {
+static __always_inline void event_enqueue(void * event, enum major_event_type type, int cpu_id) {
     if(type == APP_EVENT) {
         bpf_printk("APP_EVENT");
        //struct app_event enq_event = *(struct app_event *) event;
@@ -421,6 +475,10 @@ static __always_inline int next_flow(struct flow_id *flow, int cpu_id) {
 
     bpf_for_each_map_elem(flow_info_hash, loop_hash_info, &data, 0);
 
+    if(data.f_id.src_ip == 0 && data.f_id.dest_ip == 0 &&
+        data.f_id.src_port == 0 && data.f_id.dest_port == 0)
+        return 0;
+
     *flow = data.f_id;
 
     return 1;
@@ -464,7 +522,11 @@ static __always_inline void * event_dequeue(void * outer_event_hash, struct flow
         return NULL;
     }
 
-    void * inner_flow_array = bpf_map_lookup_elem(outer_event_hash, &flow);
+    // Note: change here also after I update userspace program to establish series to hash MoM
+    struct flow_id key = {0, 0, 0, 0};
+
+    void * inner_flow_array = bpf_map_lookup_elem(outer_event_hash, &key);
+    //void * inner_flow_array = bpf_map_lookup_elem(outer_event_hash, &flow);
     if(!inner_flow_array) {
         bpf_printk("event_dequeue: Couldn't get entry from flow info outer map");
         return NULL;
@@ -486,61 +548,64 @@ static __always_inline void * event_dequeue(void * outer_event_hash, struct flow
     return event;
 }
 
-static __always_inline void scheduler(void * event, enum event_type type, struct xdp_md *ctx, int cpu_id) {
-    event_enqueue(event, type, cpu_id);
+static __always_inline void scheduler(void * event, enum major_event_type major_type,
+    struct xdp_md *ctx, int cpu_id) {
+
+    event_enqueue(event, major_type, cpu_id);
 
     //struct net_event teste = *(struct net_event *) event;
     //bpf_printk("%d %d", teste.ev_flow_id.src_ip, teste.ev_flow_id.dest_ip);
     //bpf_printk("%d %d", teste.ev_flow_id.src_port, teste.ev_flow_id.dest_port);
 
-    struct flow_id chosen_flow;
-    if(!next_flow(&chosen_flow, cpu_id))
-        return;
+    for(int i = 0; i < MAX_NUM_PROCESSED_EVENTS; i++) {
+        struct flow_id chosen_flow;
+        if(!next_flow(&chosen_flow, cpu_id))
+            return;
 
-    //bpf_printk("%d %d", chosen_flow.src_ip, chosen_flow.dest_ip);
-    //bpf_printk("%d %d", chosen_flow.src_port, chosen_flow.dest_port);
+        //bpf_printk("%d %d", chosen_flow.src_ip, chosen_flow.dest_ip);
+        //bpf_printk("%d %d", chosen_flow.src_port, chosen_flow.dest_port);
 
-    int returned_type = next_event(chosen_flow, cpu_id);
-    if(returned_type == -1)
-        return;
+        int returned_type = next_event(chosen_flow, cpu_id);
+        if(returned_type == -1)
+            return;
 
-    struct flow_info *f_info;
-    if(!find_flow_info(chosen_flow, cpu_id, &f_info))
-        return;
+        struct flow_info *f_info;
+        if(!find_flow_info(chosen_flow, cpu_id, &f_info))
+            return;
 
-    switch (returned_type)
-    {
-    case APP_EVENT:
-        //struct app_event ev;
-        break;
-    
-    case NET_EVENT:
+        switch (returned_type)
         {
-            // Note: fix problem of accessing outer map
-            struct net_event * ev = (struct net_event *) event_dequeue(&outer_net_hash, chosen_flow, cpu_id,
-                &(f_info->net_info.len_net_queue), &(f_info->net_info.net_head), &(f_info->net_info.net_tail));
-            if(!ev)
-                return;
-            bpf_printk("VALUE: %d",ev->value);
+        case APP_EVENT:
+            //struct app_event ev;
             break;
+        
+        case NET_EVENT:
+            {
+                struct net_event * ev = (struct net_event *) event_dequeue(&outer_net_hash, chosen_flow, cpu_id,
+                    &(f_info->net_info.len_net_queue), &(f_info->net_info.net_head), &(f_info->net_info.net_tail));
+                if(!ev)
+                    break;
+                dispatcher(ev, ev->event_type, ev->ev_flow_id);
+                break;
+            }
+        
+        case TIMER_EVENT:
+            //struct timer_event ev;
+            //event_dequeue();
+            break;
+        
+        case PROG_EVENT:
+            //struct prog_event ev;
+            //event_dequeue();
+            break;
+        
+        default:
+            return;
         }
-    
-    case TIMER_EVENT:
-        //struct timer_event ev;
-        //event_dequeue();
-        break;
-    
-    case PROG_EVENT:
-        //struct prog_event ev;
-        //event_dequeue();
-        break;
-    
-    default:
-        return;
-    }
 
-    bpf_printk("\nHEAD: %d\nTAIL: %d", f_info->net_info.net_head, f_info->net_info.len_net_queue);
-    bpf_printk("LEN: %d", f_info->net_info.len_net_queue);    
+        //bpf_printk("\nHEAD: %d\nTAIL: %d", f_info->net_info.net_head, f_info->net_info.net_tail);
+        //bpf_printk("LEN: %d", f_info->net_info.len_net_queue);
+    }    
 }
 
 SEC("xdp")
@@ -555,6 +620,7 @@ int rx_module(struct xdp_md *ctx)
     int cpu = bpf_get_smp_processor_id();
     //bpf_printk("CPU: %d", cpu);
 
+    // Note: TO DO -> differentiate between app and net events
     scheduler((void *) &net_ev, NET_EVENT, ctx, cpu);
 
     //modify_fake_packet(ctx);

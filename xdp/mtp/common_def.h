@@ -4,12 +4,19 @@
 #define MAX_NUMBER_CORES 8
 #define MAX_NUMBER_FLOWS 20
 #define MAX_EVENT_QUEUE_LEN 10
+#define MAX_NUM_PROCESSED_EVENTS 1
 
-enum event_type {
+enum major_event_type {
     APP_EVENT,
     NET_EVENT,
     TIMER_EVENT,
     PROG_EVENT
+};
+
+enum minor_event_type {
+    SEND,
+    ACK,
+    MISS_ACK,
 };
 
 struct flow_id {
@@ -24,22 +31,26 @@ struct hash_key {
 };
 
 struct app_event {
+    enum minor_event_type event_type;
     struct flow_id ev_flow_id;
     __u64 occupied;
     __u64 value;
 };
 
 struct net_event {
+    enum minor_event_type event_type;
     struct flow_id ev_flow_id;
     __u64 value;
 };
 
 struct timer_event {
+    enum minor_event_type event_type;
     struct flow_id ev_flow_id;
     __u64 value;
 };
 
 struct prog_event {
+    enum minor_event_type event_type;
     struct flow_id ev_flow_id;
     __u64 value;
 };
@@ -89,6 +100,12 @@ struct flow_loop_data {
     __u32 len_net_queue;
     __u32 len_timer_queue;
     __u32 len_prog_queue;
+};
+
+struct context {
+    __u32 value1;
+    __u32 value2;
+    __u32 value3;
 };
 
 struct test {
