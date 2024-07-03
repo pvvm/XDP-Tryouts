@@ -56,10 +56,9 @@ struct prog_event {
 };
 
 struct timer_trigger {
-    struct flow_id ev_flow_id;
-    __u64 value;
     struct bpf_timer timer;
-    //struct xdp_md *packet;
+    struct timer_event t_event;
+    __u32 cpu_id;
 };
 
 struct queue_head_tail {
@@ -106,6 +105,10 @@ struct context {
     __u32 value1;
     __u32 value2;
     __u32 value3;
+};
+
+struct sched_loop_args {
+    __u32 cpu_id;
 };
 
 struct test {

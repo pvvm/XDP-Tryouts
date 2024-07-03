@@ -133,11 +133,11 @@ struct outer_flow_info_array {
 /*--------------- TIMER TRIGGER MAP ---------------*/
 
 struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
-    __type(key, __u32);
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, struct flow_id);
     __type(value, struct timer_trigger);
-    __uint(max_entries, MAX_NUMBER_CORES);
-} timer_array SEC(".maps");
+    __uint(max_entries, MAX_NUMBER_FLOWS);
+} timer_trigger_hash SEC(".maps");
 
 /*--------------- CONTEXT HASH MAP ---------------*/
 
@@ -308,52 +308,6 @@ static __always_inline int initialize_timer(int cpu) {
 
     return 0;
 }*/
-
-static __always_inline struct context * retrieve_ctx(struct flow_id flow) {
-    struct context *ctx = bpf_map_lookup_elem(&context_hash, &flow);
-    if(!ctx) {
-        struct context new_ctx = {0, 0 , 0};
-        bpf_map_update_elem(&context_hash, &flow, &new_ctx, BPF_NOEXIST);
-        ctx = bpf_map_lookup_elem(&context_hash, &flow);
-        if(!ctx) {
-            return NULL;
-        }
-        return ctx;
-    }
-    return ctx;
-}
-
-// Note: how can we "return" several prog events if they are created in an ep?
-static __always_inline void example_ep(void *event, struct context *ctx) {
-    
-}
-
-static __always_inline void dispatcher(void * event, enum minor_event_type type, struct flow_id flow) {
-    struct context *ctx = retrieve_ctx(flow);
-    if(!ctx) {
-        bpf_printk("dispatcher: Couldn't retrive ctx");
-        return;
-    }
-
-    switch (type)
-    {
-    case SEND:
-        bpf_printk("APP_EVENT");
-        break;
-    
-    case ACK:
-        bpf_printk("ACK");
-        example_ep(event, ctx);
-        break;
-    
-    case MISS_ACK:
-        bpf_printk("MISS_ACK");
-        break;
-    
-    default:
-        break;
-    }
-}
 
 
 static __always_inline int find_flow_info(struct flow_id ev_flow_id, int cpu_id, struct flow_info **f_info) {
@@ -548,6 +502,146 @@ static __always_inline void * event_dequeue(void * outer_event_hash, struct flow
     return event;
 }
 
+static int create_timer_event(void *map, struct flow_id *flow, struct timer_trigger *val) {
+    struct timer_event new_event = val->t_event;
+    __u32 cpu_id = val->cpu_id;
+    event_enqueue(&new_event, TIMER_EVENT, cpu_id);
+
+    return 0;
+}
+
+static __always_inline int initialize_timer(struct timer_event event, struct flow_id flow, __u32 cpu_id, __u64 time) {
+    struct timer_trigger *map_entry;
+
+    map_entry = bpf_map_lookup_elem(&timer_trigger_hash, &flow);
+    if(!map_entry) {
+        struct timer_trigger new_timer;
+        bpf_map_update_elem(&timer_trigger_hash, &flow, &new_timer, BPF_NOEXIST);
+        map_entry = bpf_map_lookup_elem(&timer_trigger_hash, &flow);
+        if(!map_entry) {
+            return -1;
+        }
+    }
+
+    map_entry->t_event = event;
+    map_entry->cpu_id = cpu_id;
+
+    long int i = bpf_timer_init(&map_entry->timer, &timer_trigger_hash, CLOCK_BOOTTIME);
+    /*if(i != 0) {
+        bpf_printk("Error while initializing timer: %ld", i);
+    }*/
+
+    // Sets the function to be called after the timer triggers
+    i = bpf_timer_set_callback(&map_entry->timer, create_timer_event);
+    if(i != 0) {
+        bpf_printk("Error while setting callback: %ld", i);
+    }
+
+    bpf_timer_start(&map_entry->timer, time, 0);
+
+    return 0;
+}
+
+// Note: how can we "return" several prog events if they are created in an ep?
+static __always_inline void example_ep(struct net_event *event, struct context *ctx, __u32 cpu_id) {
+    struct timer_event new_event;
+    new_event.ev_flow_id = event->ev_flow_id;
+    new_event.event_type = MISS_ACK;
+    new_event.value = 0;
+    initialize_timer(new_event, new_event.ev_flow_id, cpu_id, TEN_SEC);
+}
+
+static __always_inline struct context * retrieve_ctx(struct flow_id flow) {
+    struct context *ctx = bpf_map_lookup_elem(&context_hash, &flow);
+    if(!ctx) {
+        struct context new_ctx = {0, 0, 0};
+        bpf_map_update_elem(&context_hash, &flow, &new_ctx, BPF_NOEXIST);
+        ctx = bpf_map_lookup_elem(&context_hash, &flow);
+        if(!ctx) {
+            return NULL;
+        }
+        return ctx;
+    }
+    return ctx;
+}
+
+static __always_inline void dispatcher(void * event, enum minor_event_type type, struct flow_id flow, __u32 cpu_id) {
+    struct context *ctx = retrieve_ctx(flow);
+    if(!ctx) {
+        bpf_printk("dispatcher: Couldn't retrive ctx");
+        return;
+    }
+
+    switch (type)
+    {
+    case SEND:
+        bpf_printk("APP_EVENT");
+        break;
+    
+    case ACK:
+        bpf_printk("ACK");
+        example_ep(event, ctx, cpu_id);
+        break;
+    
+    case MISS_ACK:
+        bpf_printk("MISS_ACK");
+        break;
+    
+    default:
+        break;
+    }
+}
+
+static long scheduler_loop(__u32 index, struct sched_loop_args * arg) {
+    __u32 cpu_id = arg->cpu_id;
+    struct flow_id chosen_flow;
+    if(!next_flow(&chosen_flow, cpu_id))
+        return 1;
+
+    bpf_printk("%d %d", chosen_flow.src_ip, chosen_flow.dest_ip);
+    bpf_printk("%d %d", chosen_flow.src_port, chosen_flow.dest_port);
+
+    int returned_type = next_event(chosen_flow, cpu_id);
+    if(returned_type == -1)
+        return 1;
+
+    struct flow_info *f_info;
+    if(!find_flow_info(chosen_flow, cpu_id, &f_info))
+        return 1;
+
+    switch (returned_type)
+    {
+    case APP_EVENT:
+        //struct app_event ev;
+        break;
+    
+    case NET_EVENT:
+        {
+            struct net_event * ev = (struct net_event *) event_dequeue(&outer_net_hash, chosen_flow, cpu_id,
+                &(f_info->net_info.len_net_queue), &(f_info->net_info.net_head), &(f_info->net_info.net_tail));
+            if(!ev)
+                return 1;
+            dispatcher(ev, ev->event_type, ev->ev_flow_id, cpu_id);
+            break;
+        }
+    
+    case TIMER_EVENT:
+        //struct timer_event ev;
+        //event_dequeue();
+        break;
+    
+    case PROG_EVENT:
+        //struct prog_event ev;
+        //event_dequeue();
+        break;
+    
+    default:
+        return 0;
+    }
+    return 0;
+}
+
+
 static __always_inline void scheduler(void * event, enum major_event_type major_type,
     struct xdp_md *ctx, int cpu_id) {
 
@@ -557,55 +651,11 @@ static __always_inline void scheduler(void * event, enum major_event_type major_
     //bpf_printk("%d %d", teste.ev_flow_id.src_ip, teste.ev_flow_id.dest_ip);
     //bpf_printk("%d %d", teste.ev_flow_id.src_port, teste.ev_flow_id.dest_port);
 
-    for(int i = 0; i < MAX_NUM_PROCESSED_EVENTS; i++) {
-        struct flow_id chosen_flow;
-        if(!next_flow(&chosen_flow, cpu_id))
-            return;
+    struct sched_loop_args arg = {cpu_id};
 
-        //bpf_printk("%d %d", chosen_flow.src_ip, chosen_flow.dest_ip);
-        //bpf_printk("%d %d", chosen_flow.src_port, chosen_flow.dest_port);
-
-        int returned_type = next_event(chosen_flow, cpu_id);
-        if(returned_type == -1)
-            return;
-
-        struct flow_info *f_info;
-        if(!find_flow_info(chosen_flow, cpu_id, &f_info))
-            return;
-
-        switch (returned_type)
-        {
-        case APP_EVENT:
-            //struct app_event ev;
-            break;
-        
-        case NET_EVENT:
-            {
-                struct net_event * ev = (struct net_event *) event_dequeue(&outer_net_hash, chosen_flow, cpu_id,
-                    &(f_info->net_info.len_net_queue), &(f_info->net_info.net_head), &(f_info->net_info.net_tail));
-                if(!ev)
-                    break;
-                dispatcher(ev, ev->event_type, ev->ev_flow_id);
-                break;
-            }
-        
-        case TIMER_EVENT:
-            //struct timer_event ev;
-            //event_dequeue();
-            break;
-        
-        case PROG_EVENT:
-            //struct prog_event ev;
-            //event_dequeue();
-            break;
-        
-        default:
-            return;
-        }
-
-        //bpf_printk("\nHEAD: %d\nTAIL: %d", f_info->net_info.net_head, f_info->net_info.net_tail);
-        //bpf_printk("LEN: %d", f_info->net_info.len_net_queue);
-    }    
+    // Note: this constant is a placeholder. In the future, we'll have a variable
+    // that will dictate the amount of times the loop is executed
+    bpf_loop(MAX_NUM_PROCESSED_EVENTS, scheduler_loop, &arg, 0);
 }
 
 SEC("xdp")
