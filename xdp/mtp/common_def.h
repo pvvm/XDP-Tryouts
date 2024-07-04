@@ -4,7 +4,9 @@
 #define MAX_NUMBER_CORES 8
 #define MAX_NUMBER_FLOWS 20
 #define MAX_EVENT_QUEUE_LEN 10
-#define MAX_NUM_PROCESSED_EVENTS 1
+#define MAX_NUM_PROCESSED_EVENTS 3
+#define MAX_NUMBER_TIMERS 10
+#define NO_TIMER_AVAILABLE 999999
 
 enum major_event_type {
     APP_EVENT,
@@ -59,6 +61,7 @@ struct timer_trigger {
     struct bpf_timer timer;
     struct timer_event t_event;
     __u32 cpu_id;
+    __u32 triggered;
 };
 
 struct queue_head_tail {
@@ -107,8 +110,16 @@ struct context {
     __u32 value3;
 };
 
+struct intermediate_output {
+    __u32 value;
+};
+
 struct sched_loop_args {
     __u32 cpu_id;
+};
+
+struct timer_loop_args {
+    __u32 index;
 };
 
 struct test {

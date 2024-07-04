@@ -86,7 +86,7 @@ struct outer_net_hash {
 struct inner_timer_array {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __type(key, __u32);
-    __type(value, struct net_event);
+    __type(value, struct timer_event);
     __uint(max_entries, MAX_EVENT_QUEUE_LEN);
 } inner_timer_array0 SEC(".maps"), inner_timer_array1 SEC(".maps"), inner_timer_array2 SEC(".maps"), inner_timer_array3 SEC(".maps"),
 inner_timer_array4 SEC(".maps"), inner_timer_array5 SEC(".maps"), inner_timer_array6 SEC(".maps"), inner_timer_array7 SEC(".maps"),
@@ -132,12 +132,30 @@ struct outer_flow_info_array {
 
 /*--------------- TIMER TRIGGER MAP ---------------*/
 
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __type(key, struct flow_id);
+struct timer_trigger_inner_array {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __type(key, __u32);
     __type(value, struct timer_trigger);
+    __uint(max_entries, MAX_NUMBER_TIMERS);
+}  timer_trigger_inner_array0 SEC(".maps"), timer_trigger_inner_array1 SEC(".maps"), timer_trigger_inner_array2 SEC(".maps"), timer_trigger_inner_array3 SEC(".maps"),
+timer_trigger_inner_array4 SEC(".maps"), timer_trigger_inner_array5 SEC(".maps"), timer_trigger_inner_array6 SEC(".maps"), timer_trigger_inner_array7 SEC(".maps"),
+timer_trigger_inner_array8 SEC(".maps"), timer_trigger_inner_array9 SEC(".maps"), timer_trigger_inner_array10 SEC(".maps"), timer_trigger_inner_array11 SEC(".maps"),
+timer_trigger_inner_array12 SEC(".maps"), timer_trigger_inner_array13 SEC(".maps"), timer_trigger_inner_array14 SEC(".maps"), timer_trigger_inner_array15 SEC(".maps"),
+timer_trigger_inner_array16 SEC(".maps"), timer_trigger_inner_array17 SEC(".maps"), timer_trigger_inner_array18 SEC(".maps"), timer_trigger_inner_array19 SEC(".maps");
+
+struct timer_trigger_outer_hash {
+    __uint(type, BPF_MAP_TYPE_HASH_OF_MAPS);
+    __type(key, struct flow_id);
     __uint(max_entries, MAX_NUMBER_FLOWS);
-} timer_trigger_hash SEC(".maps");
+    __array(values, struct timer_trigger_inner_array);
+} timer_trigger_outer_hash SEC(".maps") = {
+    .values = {
+        [0] = &timer_trigger_inner_array0, [1] = &timer_trigger_inner_array1, [2] = &timer_trigger_inner_array2, [3] = &timer_trigger_inner_array3, [4] = &timer_trigger_inner_array4,
+        [5] = &timer_trigger_inner_array5, [6] = &timer_trigger_inner_array6, [7] = &timer_trigger_inner_array7, [8] = &timer_trigger_inner_array8, [9] = &timer_trigger_inner_array9,
+        [10] = &timer_trigger_inner_array10, [11] = &timer_trigger_inner_array11, [12] = &timer_trigger_inner_array12, [13] = &timer_trigger_inner_array13, [14] = &timer_trigger_inner_array14,
+        [15] = &timer_trigger_inner_array15, [16] = &timer_trigger_inner_array16, [17] = &timer_trigger_inner_array17, [18] = &timer_trigger_inner_array18, [19] = &timer_trigger_inner_array19,
+    },
+};
 
 /*--------------- CONTEXT HASH MAP ---------------*/
 
@@ -261,37 +279,6 @@ static __always_inline int parse_packet(struct xdp_md *ctx, struct net_event *ne
     return 1;
 }
 
-/*static int timer_triggered(void *map, __u32 *key, struct timer_trigger *val) {
-    bpf_printk("CPU: %d", *key);
-    return 0;
-}
-
-static __always_inline int initialize_timer(int cpu) {
-    struct timer_trigger *map_entry;
-
-    map_entry = bpf_map_lookup_elem(&timer_array, &cpu);
-    if(!map_entry) {
-        bpf_printk("Couldn't get entry of the map");
-        return -1;
-    }
-
-    long int i = bpf_timer_init(&map_entry->timer, &timer_array, CLOCK_BOOTTIME);
-    if(i != 0) {
-        bpf_printk("Error while initializing timer: %ld", i);
-    }
-
-    // Sets the function to be called after the timer triggers
-    i = bpf_timer_set_callback(&map_entry->timer, timer_triggered);
-    if(i != 0) {
-        bpf_printk("Error while setting callback: %ld", i);
-    }
-
-    // Starts the timer for 1 second
-    bpf_timer_start(&map_entry->timer, ONE_SEC, 0);
-
-    return 0;
-}*/
-
 /*static __always_inline int modify_fake_packet(struct xdp_md *ctx) {
     void *data_end = (void *)(long)ctx->data_end;
     void *data     = (void *)(long)ctx->data;
@@ -390,7 +377,7 @@ static __always_inline void event_enqueue(void * event, enum major_event_type ty
         struct flow_info *f_info;
         if(!find_flow_info(enq_event.ev_flow_id, 0, &f_info))
             return;
-        if(!try_to_enqueue(&outer_net_hash, event, enq_event.ev_flow_id, &(f_info->net_info.len_net_queue),
+        if(!try_to_enqueue(&outer_timer_hash, event, enq_event.ev_flow_id, &(f_info->timer_info.len_timer_queue),
             &(f_info->timer_info.timer_head), &(f_info->timer_info.timer_tail))) {
             bpf_printk("Unable to enqueue event");
         }
@@ -457,6 +444,9 @@ static __always_inline int next_event(struct flow_id flow_id, int cpu_id) {
     type_priorities[2] *= f_info->timer_info.len_timer_queue;
     type_priorities[3] *= f_info->prog_info.len_prog_queue;
 
+    bpf_printk("APP: %d NET: %d", type_priorities[0], type_priorities[1]);
+    bpf_printk("TIMER: %d PROG: %d", type_priorities[2], type_priorities[3]);
+
     __u32 max_prio = 0;
     int type = 0;
     for(int i = 0; i < 4; i++) {
@@ -503,6 +493,7 @@ static __always_inline void * event_dequeue(void * outer_event_hash, struct flow
 }
 
 static int create_timer_event(void *map, struct flow_id *flow, struct timer_trigger *val) {
+    val->triggered = 0;
     struct timer_event new_event = val->t_event;
     __u32 cpu_id = val->cpu_id;
     event_enqueue(&new_event, TIMER_EVENT, cpu_id);
@@ -510,40 +501,72 @@ static int create_timer_event(void *map, struct flow_id *flow, struct timer_trig
     return 0;
 }
 
-static __always_inline int initialize_timer(struct timer_event event, struct flow_id flow, __u32 cpu_id, __u64 time) {
-    struct timer_trigger *map_entry;
+static __u64 find_timer_index_loop(struct bpf_map *map, __u32 * index,
+    struct timer_trigger *map_entry, struct timer_loop_args * arg) {
 
-    map_entry = bpf_map_lookup_elem(&timer_trigger_hash, &flow);
+    arg->index = *index;
+    //bpf_printk("TEST %d", arg->index);
+
+    if(!map_entry->triggered)
+        return 1;
+
+    // Placeholder value
+    if(arg->index == MAX_NUMBER_TIMERS - 1)
+        arg->index = NO_TIMER_AVAILABLE;
+
+    return 0;
+}
+
+static __always_inline int initialize_timer(struct timer_event event, struct flow_id flow, __u32 cpu_id, __u64 time) {
+
+    // Note: change here later when the hash MoM have entries initialized at userspace
+    struct flow_id key = {0, 0, 0, 0};
+    struct timer_trigger_inner_array * inner_map = bpf_map_lookup_elem(&timer_trigger_outer_hash, &key);
+    //struct timer_trigger_inner_array * inner_map = bpf_map_lookup_elem(&timer_trigger_outer_hash, &flow);
+    if(!inner_map) {
+        bpf_printk("initialize_timer: Couldn't find outer map entry");
+        return -1;
+    }
+
+    struct timer_loop_args args;
+    bpf_for_each_map_elem(inner_map, find_timer_index_loop, &args, 0);
+
+    // Note: this might be difficult to happen, but what if we don't have any more timers for a flow available?
+    if(args.index == NO_TIMER_AVAILABLE) {
+        bpf_printk("initialize_timer: There is no timer available for this flow");
+        return -1;
+    }
+
+    struct timer_trigger *map_entry = bpf_map_lookup_elem(inner_map, &(args.index));
     if(!map_entry) {
-        struct timer_trigger new_timer;
-        bpf_map_update_elem(&timer_trigger_hash, &flow, &new_timer, BPF_NOEXIST);
-        map_entry = bpf_map_lookup_elem(&timer_trigger_hash, &flow);
-        if(!map_entry) {
-            return -1;
-        }
+        bpf_printk("initialize_timer: Couldn't find inner map entry");
+        return -1;
     }
 
     map_entry->t_event = event;
     map_entry->cpu_id = cpu_id;
+    map_entry->triggered = 1;
 
-    long int i = bpf_timer_init(&map_entry->timer, &timer_trigger_hash, CLOCK_BOOTTIME);
+    long int err = bpf_timer_init(&(map_entry->timer), inner_map, CLOCK_BOOTTIME);
     /*if(i != 0) {
         bpf_printk("Error while initializing timer: %ld", i);
     }*/
 
     // Sets the function to be called after the timer triggers
-    i = bpf_timer_set_callback(&map_entry->timer, create_timer_event);
-    if(i != 0) {
-        bpf_printk("Error while setting callback: %ld", i);
+    err = bpf_timer_set_callback(&(map_entry->timer), create_timer_event);
+    if(err != 0) {
+        bpf_printk("Error while setting callback: %ld", err);
     }
 
-    bpf_timer_start(&map_entry->timer, time, 0);
+    bpf_timer_start(&(map_entry->timer), time, 0);
 
     return 0;
 }
 
 // Note: how can we "return" several prog events if they are created in an ep?
-static __always_inline void example_ep(struct net_event *event, struct context *ctx, __u32 cpu_id) {
+static __always_inline void example_ep(struct net_event *event, struct context *ctx,
+    __u32 cpu_id, struct intermediate_output *inter_output) {
+        
     struct timer_event new_event;
     new_event.ev_flow_id = event->ev_flow_id;
     new_event.event_type = MISS_ACK;
@@ -567,6 +590,7 @@ static __always_inline struct context * retrieve_ctx(struct flow_id flow) {
 
 static __always_inline void dispatcher(void * event, enum minor_event_type type, struct flow_id flow, __u32 cpu_id) {
     struct context *ctx = retrieve_ctx(flow);
+    struct intermediate_output inter_output;
     if(!ctx) {
         bpf_printk("dispatcher: Couldn't retrive ctx");
         return;
@@ -575,12 +599,12 @@ static __always_inline void dispatcher(void * event, enum minor_event_type type,
     switch (type)
     {
     case SEND:
-        bpf_printk("APP_EVENT");
+        bpf_printk("SEND");
         break;
     
     case ACK:
         bpf_printk("ACK");
-        example_ep(event, ctx, cpu_id);
+        example_ep(event, ctx, cpu_id, &inter_output);
         break;
     
     case MISS_ACK:
@@ -598,8 +622,8 @@ static long scheduler_loop(__u32 index, struct sched_loop_args * arg) {
     if(!next_flow(&chosen_flow, cpu_id))
         return 1;
 
-    bpf_printk("%d %d", chosen_flow.src_ip, chosen_flow.dest_ip);
-    bpf_printk("%d %d", chosen_flow.src_port, chosen_flow.dest_port);
+    //bpf_printk("%d %d", chosen_flow.src_ip, chosen_flow.dest_ip);
+    //bpf_printk("%d %d", chosen_flow.src_port, chosen_flow.dest_port);
 
     int returned_type = next_event(chosen_flow, cpu_id);
     if(returned_type == -1)
@@ -615,6 +639,8 @@ static long scheduler_loop(__u32 index, struct sched_loop_args * arg) {
         //struct app_event ev;
         break;
     
+    // Note: NET_EVENT may need to necessarily have a higher position in the hierarchy of the scheduler,
+    // since we need to process the event when a packet arrives to use AF_XDP
     case NET_EVENT:
         {
             struct net_event * ev = (struct net_event *) event_dequeue(&outer_net_hash, chosen_flow, cpu_id,
@@ -626,9 +652,15 @@ static long scheduler_loop(__u32 index, struct sched_loop_args * arg) {
         }
     
     case TIMER_EVENT:
-        //struct timer_event ev;
-        //event_dequeue();
-        break;
+        {
+            bpf_printk("TIMER_EVENT IS THE LARGEST");
+            struct timer_event * ev = (struct timer_event *) event_dequeue(&outer_timer_hash, chosen_flow, cpu_id,
+                &(f_info->timer_info.len_timer_queue), &(f_info->timer_info.timer_head), &(f_info->timer_info.timer_tail));
+            if(!ev)
+                return 1;
+            dispatcher(ev, ev->event_type, ev->ev_flow_id, cpu_id);
+            break;
+        }
     
     case PROG_EVENT:
         //struct prog_event ev;
