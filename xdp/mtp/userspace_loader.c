@@ -35,6 +35,7 @@
 #include "../common/common_libbpf.h"
 
 #include "common_def.h"
+#include "req_queue.h"
 
 #define NUM_FRAMES         	4096
 #define FRAME_SIZE         	XSK_UMEM__DEFAULT_FRAME_SIZE
@@ -48,6 +49,9 @@ static const char *default_progname = "rx_module";
 static struct xdp_program *prog;
 int xsk_map_fd;
 bool custom_xsk = false;
+
+//struct req_queue *cpu_req_queues;
+struct req_queue_v2 cpu_req_queues_v2[MAX_NUMBER_CORES];
 
 struct config cfg = {
 	.ifindex   = -1,
@@ -238,7 +242,7 @@ static struct xsk_socket_info *xsk_configure_socket(struct config *cfg,
 	xsk_cfg.libbpf_flags = (custom_xsk) ? XSK_LIBBPF_FLAGS__INHIBIT_PROG_LOAD: 0;
 	/* Creates socket, storing its address in xsk_info->xsk */
 
-	printf("\n\nQueue id %d\n\n", cfg->xsk_if_queue);
+	//printf("\n\nQueue id %d\n\n", cfg->xsk_if_queue);
 	ret = xsk_socket__create(&xsk_info->xsk, cfg->ifname,
 				 cfg->xsk_if_queue, umem->umem, &xsk_info->rx,
 				 &xsk_info->tx, &xsk_cfg);
@@ -464,7 +468,7 @@ static void handle_receive_packets(struct xsk_socket_info *xsk)
 	complete_tx(xsk);
 }
 
-void produce_app_events(int cpu_id, int map_fd, int *inner_index) {
+void produce_app_events(int cpu_id, int map_fd, int *inner_index, atomic_uint * last_head) {
 	int inner_id, inner_fd, err;
 	
 	struct app_event old_entry;
@@ -472,16 +476,23 @@ void produce_app_events(int cpu_id, int map_fd, int *inner_index) {
 	// Note: I think we should have the main thread communicating
 	// with the application. And the main thread sends the value and flow_id
 	// to each worker thread. A queue data structure maybe?
-	struct flow_id key = {0, 0, 0, 0};
-	struct app_event new_entry = {APP_EVENT, key, 1, 0};
+	//struct flow_id key = {0, 0, 0, 0};
+	//struct app_event new_entry = {APP_EVENT, key, 1, 0};
 
-	new_entry.value = cpu_id;
+	//struct app_event* new_entry = read_first_req(cpu_req_queues, cpu_id);
+	atomic_uint curr_head;
+	struct app_event* new_entry = read_first_req_v2(&cpu_req_queues_v2[cpu_id], &curr_head);
+	if(new_entry == NULL || curr_head == *last_head)
+		return;
+	*last_head = curr_head;
 
-	err = bpf_map_lookup_elem(map_fd, &key, &inner_id);
+	err = bpf_map_lookup_elem(map_fd, &(new_entry->ev_flow_id), &inner_id);
 	if(err < 0) {
 		printf("Couldn't find entry of outer map\n");
 		return;
 	}
+	printf("%d %d %d %d", new_entry->ev_flow_id.src_ip, new_entry->ev_flow_id.dest_ip, new_entry->ev_flow_id.src_port, new_entry->ev_flow_id.dest_port);
+
 	inner_fd = bpf_map_get_fd_by_id(inner_id);
 
 	err = bpf_map_lookup_elem(inner_fd, inner_index, &old_entry);
@@ -493,7 +504,7 @@ void produce_app_events(int cpu_id, int map_fd, int *inner_index) {
 	//printf("Old entry CPU %d: %lld %lld\n", cpu_id, old_entry.occupied, old_entry.value);
 
 	if(!old_entry.occupied) {
-		err = bpf_map_update_elem(inner_fd, inner_index, &new_entry, BPF_ANY);
+		err = bpf_map_update_elem(inner_fd, inner_index, new_entry, BPF_ANY);
 		if(err < 0) {
 			printf("Couldn't update entry of inner map\n");
 			return;
@@ -502,12 +513,10 @@ void produce_app_events(int cpu_id, int map_fd, int *inner_index) {
 			(*inner_index)++;
 		else
 			*inner_index = 0;
-	} else {
-		//printf("Entry of CPU %d and index %d is already occupied\n", cpu_id, *inner_index);
-
-		// Note: if the entry isn't occupied, we enqueue the new entry and
-		// dequeue the event + flow_id from the data structure.
-		// If not, we don't dequeue and in the next time this function is called we try again
+		
+		//req_dequeue(cpu_req_queues, cpu_id);
+		req_dequeue_v2(&cpu_req_queues_v2[cpu_id]);
+		printf("\nOI\n");
 	}
 	// VERY IMPORTANT (bpf_map_get_fd_by_id keep returning an increasing value if not used)
 	close(inner_fd);
@@ -534,7 +543,7 @@ void * producer_and_afxdp(void *arg) {
 	// Producing new app events
 	// AF_XDP packet handling
 
-	unsigned char data[1500];
+	/*unsigned char data[1500];
 	char buf[1500];
 	struct test teste;
 	teste.value = xsk_socket->cpu_id;
@@ -553,12 +562,13 @@ void * producer_and_afxdp(void *arg) {
 	}
 
 	struct test retorno;
-	memcpy(&retorno, buf, sizeof(retorno));
-	printf("%d\n", retorno.value);
-
+	memcpy(&retorno, buf, sizeof(retorno));*/
+	//printf("%d\n", retorno.value);
+	
+	atomic_uint last_head = 99999999;
 	while(!global_exit) {
 	
-		produce_app_events(xsk_socket->cpu_id, prod_map_fd, &inner_index);
+		produce_app_events(xsk_socket->cpu_id, prod_map_fd, &inner_index, &last_head);
 
 		if (cfg->xsk_poll_mode) {
 			ret = poll(fds, nfds, -1);
@@ -597,11 +607,11 @@ static double calc_period(struct stats_record *r, struct stats_record *p)
 	return period_;
 }*/
 
-static void stats_print(struct stats_record *stats_rec,
+/*static void stats_print(struct stats_record *stats_rec,
 			struct stats_record *stats_prev,
 			int cpu_id)
 {
-	/*uint64_t packets, bytes;
+	uint64_t packets, bytes;
 	double period;
 	double pps;
 	double bps;
@@ -634,11 +644,11 @@ static void stats_print(struct stats_record *stats_rec,
 	       stats_rec->tx_bytes / 1000 , bps,
 	       period);
 
-	printf("\n");*/
+	printf("\n");
 	printf("CPU %d\nRX: %lu\tTX:%lu\n\n", cpu_id, stats_rec->rx_packets, stats_rec->tx_packets);
-}
+}*/
 
-static void *stats_poll(void *arg)
+/*static void *stats_poll(void *arg)
 {
 	unsigned int interval = 2;
 	struct xsk_socket_info *xsk = arg;
@@ -646,7 +656,7 @@ static void *stats_poll(void *arg)
 
 	//previous_stats.timestamp = gettime();
 
-	/* Trick to pretty printf with thousands separators use %' */
+	// Trick to pretty printf with thousands separators use %'
 	setlocale(LC_NUMERIC, "en_US");
 
 	while (!global_exit) {
@@ -656,6 +666,25 @@ static void *stats_poll(void *arg)
 		previous_stats = xsk->stats;
 	}
 	return NULL;
+}*/
+
+void distribute_requests() {
+	//cpu_req_queues = create_queue();
+	init_queue_v2(cpu_req_queues_v2);
+	struct app_event event = {SEND, {0, 0, 0, 0}, 1, 0};
+	int cpu_to_send = 0;
+	while(1) {
+		if(!scanf("%d", &cpu_to_send))
+			return;
+		if(cpu_to_send < 0 || cpu_to_send >= MAX_NUMBER_CORES)
+			break;
+
+		//req_enqueue(cpu_req_queues, event, cpu_to_send);
+		req_enqueue_v2(&cpu_req_queues_v2[cpu_to_send], event);
+		//print_queue(cpu_req_queues);
+		print_queue_v2(cpu_req_queues_v2);
+	}
+	//free_queue(cpu_req_queues);
 }
 
 static void exit_application(int signal)
@@ -675,7 +704,7 @@ static void exit_application(int signal)
 
 int main(int argc, char **argv)
 {
-	int ret;
+	//int ret;
 	void *packet_buffer[MAX_NUMBER_CORES];
 	uint64_t packet_buffer_size;
 	DECLARE_LIBBPF_OPTS(bpf_object_open_opts, opts);
@@ -683,7 +712,7 @@ int main(int argc, char **argv)
 	struct rlimit rlim = {RLIM_INFINITY, RLIM_INFINITY};
 	struct xsk_umem_info *umem[MAX_NUMBER_CORES];
 	struct xsk_socket_info *xsk_socket[MAX_NUMBER_CORES];
-	pthread_t stats_poll_thread[MAX_NUMBER_CORES];
+	//pthread_t stats_poll_thread[MAX_NUMBER_CORES];
 	int err;
 	char errmsg[1024];
 
@@ -810,7 +839,7 @@ int main(int argc, char **argv)
 		}
 
 		/* Start thread to do statistics display */
-		if (verbose) {
+		/*if (verbose) {
 			ret = pthread_create(&stats_poll_thread[i], NULL, stats_poll,
 						xsk_socket[i]);
 			if (ret) {
@@ -818,7 +847,7 @@ int main(int argc, char **argv)
 					"\"%s\"\n", strerror(errno));
 				exit(EXIT_FAILURE);
 			}
-		}
+		}*/
 	}
 
 	int prod_map_fd = find_map_fd(xdp_program__bpf_obj(prog), "outer_app_hash");
@@ -841,6 +870,8 @@ int main(int argc, char **argv)
 		//rx_and_process(&cfg, xsk_socket[0]);
 		CPU_ZERO(&cpuset);
 	}
+
+	distribute_requests();
 
 	for(int i = 0; i < MAX_NUMBER_CORES; i++) {
 		pthread_join(threads[i], NULL);

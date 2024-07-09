@@ -7,6 +7,7 @@
 #define MAX_NUM_PROCESSED_EVENTS 3
 #define MAX_NUMBER_TIMERS 10
 #define NO_TIMER_AVAILABLE 999999
+#define MAX_NUMBER_PROG_EVENTS 10
 
 enum major_event_type {
     APP_EVENT,
@@ -19,6 +20,7 @@ enum minor_event_type {
     SEND,
     ACK,
     MISS_ACK,
+    PROG_TEST,
 };
 
 struct flow_id {
@@ -116,6 +118,7 @@ struct intermediate_output {
 
 struct sched_loop_args {
     __u32 cpu_id;
+    struct flow_info *f_info;
 };
 
 struct timer_loop_args {
