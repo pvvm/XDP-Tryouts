@@ -23,8 +23,9 @@ static const char *__doc__ = "XDP loader and stats program\n"
 #include "../common/common_params.h"
 #include "../common/common_user_bpf_xdp.h"
 
-#define MAX_NUMBER_CORES 20
+#define MAX_NUMBER_CORES 8
 #define LEN_ARRAY 10
+#define NUMBER_LOOPS 100
 
 struct map_locked_value {
     __u64 value;
@@ -50,6 +51,7 @@ struct info {
 
 static const char *default_filename = "xdp_prog_kern.o";
 
+// "test_map_loop"
 // "hash_elem_contains_array"
 // "map_of_maps_hash"
 // "common_hash_map"
@@ -61,7 +63,7 @@ static const char *default_filename = "xdp_prog_kern.o";
 // "percpu_array_lookup"
 // "common_array_lookup_same_keys"
 // "simply_drop"
-static const char *default_progname = "map_of_maps_array";
+static const char *default_progname = "test_map_loop";
 
 
 static const struct option_wrapper long_options[] = {
@@ -167,10 +169,13 @@ static int __check_map_fd_info(int map_fd, struct bpf_map_info *info,
 void map_rate_printer(/*int counter_map_fd, int time_map_fd*/int info_map_fd) {
 	__u64 diff_latency;
 	double curr_latency;
-	__u64 last_latency[MAX_NUMBER_CORES] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+
+	__u64 last_latency[MAX_NUMBER_CORES] = {0, 0, 0, 0, 0, 0, 0, 0};
+	//__u64 last_latency[MAX_NUMBER_CORES] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
 	__u64 curr_number_pkts = 0;
-	__u64 last_number_pkts[MAX_NUMBER_CORES] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+	__u64 last_number_pkts[MAX_NUMBER_CORES] = {0, 0, 0, 0, 0, 0, 0, 0};
+	//__u64 last_number_pkts[MAX_NUMBER_CORES] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 	__u64 diff_packets = 0;
 
 	int div_counter = 0;
@@ -272,6 +277,25 @@ void map_rate_printer(/*int counter_map_fd, int time_map_fd*/int info_map_fd) {
 	int iter_with_packets = div_counter / active_cpu;
 
 	printf("\n\n# of packets: %llu\tAverage rate: %.02lf Gbps\tAverage Latency: %.02lf ns\n\n", total_sum_pkts, total_throughput / iter_with_packets, total_latency / iter_with_packets);
+}
+
+void print_loop_maps(int loop_map_fd) {
+	__u64 value;
+	int inner_id;
+	int inner_fd;
+	__u64 sum;
+
+	for(int i = 0; i < MAX_NUMBER_CORES; i++) {
+		bpf_map_lookup_elem(loop_map_fd, &i, &inner_id);
+		inner_fd = bpf_map_get_fd_by_id(inner_id);
+		value = 0;
+		sum = 0;
+		for(int j = 0; j < NUMBER_LOOPS; j++) {
+			bpf_map_lookup_elem(inner_fd, &j, &value);
+			sum += value;
+		}
+		printf("Counter of CPU %d: %llu\n", i, sum);
+	}
 }
 
 void check_queues(/*int map_of_maps_fd, */struct xdp_program *program) {
@@ -423,6 +447,7 @@ int main(int argc, char **argv)
 	struct bpf_map_info map_expect = { 0 };
 	struct bpf_map_info info = { 0 };
 	struct xdp_program *program;
+	int loop_map_fd;
 	int hash_map_fd;
 	int map_of_maps_hash_fd;
 	int lock_map_fd;
@@ -482,6 +507,11 @@ int main(int argc, char **argv)
 	}
 
 	/* Lesson#3: Locate map file descriptor */
+	loop_map_fd = find_map_fd(xdp_program__bpf_obj(program), "loop_outer_array");
+	if (loop_map_fd < 0) {
+		return EXIT_FAIL_BPF;
+	}
+
 	hash_map_with_array_fd = find_map_fd(xdp_program__bpf_obj(program), "hash_elem_with_array");
 	if (hash_map_with_array_fd < 0) {
 		return EXIT_FAIL_BPF;
@@ -593,6 +623,8 @@ int main(int argc, char **argv)
 		check_arrays(program, map_of_maps_array_fd);
 	else if(!strcmp(default_progname, "lock_map"))
 		print_lock_maps(lock_map_fd);
+	else if(!strcmp(default_progname, "test_map_loop"))
+		print_loop_maps(loop_map_fd);
 
 	cfg.unload_all = true;
 	err = do_unload(&cfg);
