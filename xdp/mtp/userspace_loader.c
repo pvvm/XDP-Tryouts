@@ -473,11 +473,9 @@ void produce_app_events(int cpu_id, int map_fd, int *inner_index, atomic_uint * 
 	
 	struct app_event old_entry;
 
-	// Note: I think we should have the main thread communicating
-	// with the application. And the main thread sends the value and flow_id
-	// to each worker thread. A queue data structure maybe?
-	//struct flow_id key = {0, 0, 0, 0};
-	//struct app_event new_entry = {APP_EVENT, key, 1, 0};
+	// This function is working properly, since it also enqueues based on the occupied bit.
+	// So, even if two CPUs receive requests to the same flow, one of them will be blocked
+	// unless they are currently in the same head position
 
 	//struct app_event* new_entry = read_first_req(cpu_req_queues, cpu_id);
 	atomic_uint curr_head;
@@ -486,18 +484,21 @@ void produce_app_events(int cpu_id, int map_fd, int *inner_index, atomic_uint * 
 		return;
 	*last_head = curr_head;
 
+	//printf("%d\n", cpu_id);
+
 	err = bpf_map_lookup_elem(map_fd, &(new_entry->ev_flow_id), &inner_id);
 	if(err < 0) {
 		printf("Couldn't find entry of outer map\n");
 		return;
 	}
-	printf("%d %d %d %d", new_entry->ev_flow_id.src_ip, new_entry->ev_flow_id.dest_ip, new_entry->ev_flow_id.src_port, new_entry->ev_flow_id.dest_port);
+	//printf("%d %d %d %d", new_entry->ev_flow_id.src_ip, new_entry->ev_flow_id.dest_ip, new_entry->ev_flow_id.src_port, new_entry->ev_flow_id.dest_port);
 
 	inner_fd = bpf_map_get_fd_by_id(inner_id);
 
 	err = bpf_map_lookup_elem(inner_fd, inner_index, &old_entry);
 	if(err < 0) {
 		printf("Couldn't find entry of inner map\n");
+		close(inner_fd);
 		return;
 	}
 
@@ -507,12 +508,14 @@ void produce_app_events(int cpu_id, int map_fd, int *inner_index, atomic_uint * 
 		err = bpf_map_update_elem(inner_fd, inner_index, new_entry, BPF_ANY);
 		if(err < 0) {
 			printf("Couldn't update entry of inner map\n");
+			close(inner_fd);
 			return;
 		}
 		if(*inner_index < MAX_EVENT_QUEUE_LEN - 1)
 			(*inner_index)++;
 		else
 			*inner_index = 0;
+		printf("Inner index %d\n", *inner_index);
 		
 		//req_dequeue(cpu_req_queues, cpu_id);
 		req_dequeue_v2(&cpu_req_queues_v2[cpu_id]);
