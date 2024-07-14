@@ -11,7 +11,6 @@
 
 enum major_event_type {
     APP_EVENT,
-    NET_EVENT,
     TIMER_EVENT,
     PROG_EVENT
 };
@@ -140,14 +139,9 @@ struct queue_head_tail {
 struct flow_info {
     struct app_info {
         __u32 app_head;
-        __u32 net_tail;
+        __u32 app_tail;
         __u32 len_app_queue;
     } app_info;
-    struct net_info {
-        __u32 net_head;
-        __u32 net_tail;
-        __u32 len_net_queue;
-    } net_info;
     struct timer_info {
         __u64 len_timer_queue;
         __u32 timer_head;

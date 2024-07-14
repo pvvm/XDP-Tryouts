@@ -92,6 +92,7 @@ struct argument {
 	struct config *cfg;
 	struct xsk_socket_info *xsk_socket;
 	int prod_map_fd;
+	int tail_map_fd;
 };
 
 static inline __u32 xsk_ring_prod__free(struct xsk_ring_prod *r)
@@ -468,7 +469,7 @@ static void handle_receive_packets(struct xsk_socket_info *xsk)
 	complete_tx(xsk);
 }
 
-void produce_app_events(int cpu_id, int map_fd, int *inner_index, atomic_uint * last_head) {
+void produce_app_events(int cpu_id, int outer_map_fd, int tail_map_fd, int *inner_index, atomic_uint * last_head) {
 	int inner_id, inner_fd, err;
 	
 	struct app_event old_entry;
@@ -480,13 +481,13 @@ void produce_app_events(int cpu_id, int map_fd, int *inner_index, atomic_uint * 
 	//struct app_event* new_entry = read_first_req(cpu_req_queues, cpu_id);
 	atomic_uint curr_head;
 	struct app_event* new_entry = read_first_req_v2(&cpu_req_queues_v2[cpu_id], &curr_head);
-	if(new_entry == NULL || curr_head == *last_head)
+	if(new_entry == NULL/* || curr_head == *last_head*/)
 		return;
 	*last_head = curr_head;
 
 	//printf("%d\n", cpu_id);
 
-	err = bpf_map_lookup_elem(map_fd, &(new_entry->ev_flow_id), &inner_id);
+	err = bpf_map_lookup_elem(outer_map_fd, &(new_entry->ev_flow_id), &inner_id);
 	if(err < 0) {
 		printf("Couldn't find entry of outer map\n");
 		return;
@@ -502,24 +503,47 @@ void produce_app_events(int cpu_id, int map_fd, int *inner_index, atomic_uint * 
 		return;
 	}
 
+	int next_index;
+	if(*inner_index < MAX_EVENT_QUEUE_LEN - 1)
+		next_index = *inner_index + 1;
+	else
+		next_index = 0;
+	
+	// This allows us to always have head and tail with different values
+	// and makes app queue behave like a regular circular queue
+	struct app_event next_entry;
+	err = bpf_map_lookup_elem(inner_fd, &next_index, &next_entry);
+	if(err < 0) {
+		printf("Couldn't find entry of inner map\n");
+		close(inner_fd);
+		return;
+	}
+	//printf("Next %d occupied? %lld\n", next_index, next_entry.occupied);
+
 	//printf("Old entry CPU %d: %lld %lld\n", cpu_id, old_entry.occupied, old_entry.value);
 
-	if(!old_entry.occupied) {
+	if(!old_entry.occupied && !next_entry.occupied) {
 		err = bpf_map_update_elem(inner_fd, inner_index, new_entry, BPF_ANY);
 		if(err < 0) {
 			printf("Couldn't update entry of inner map\n");
 			close(inner_fd);
 			return;
 		}
-		if(*inner_index < MAX_EVENT_QUEUE_LEN - 1)
-			(*inner_index)++;
-		else
-			*inner_index = 0;
-		printf("Inner index %d\n", *inner_index);
+		*inner_index = next_index;
+		
+		err = bpf_map_update_elem(tail_map_fd, &(new_entry->ev_flow_id), inner_index, BPF_ANY);
+		if(err < 0) {
+			printf("Couldn't update entry of tail map\n");
+			close(inner_fd);
+			return;
+		}
+		/*int teste;
+		bpf_map_lookup_elem(tail_map_fd, &(new_entry->ev_flow_id), &teste);
+
+		printf("Inner index %d\n", teste);*/
 		
 		//req_dequeue(cpu_req_queues, cpu_id);
 		req_dequeue_v2(&cpu_req_queues_v2[cpu_id]);
-		printf("\nOI\n");
 	}
 	// VERY IMPORTANT (bpf_map_get_fd_by_id keep returning an increasing value if not used)
 	close(inner_fd);
@@ -530,6 +554,7 @@ void * producer_and_afxdp(void *arg) {
 	struct config *cfg = info->cfg;
 	struct xsk_socket_info *xsk_socket = info->xsk_socket;
 	int prod_map_fd = info->prod_map_fd;
+	int tail_map_fd = info->tail_map_fd;
 
 	struct pollfd fds[2];
 	int ret, nfds = 1;
@@ -571,7 +596,7 @@ void * producer_and_afxdp(void *arg) {
 	atomic_uint last_head = 99999999;
 	while(!global_exit) {
 	
-		produce_app_events(xsk_socket->cpu_id, prod_map_fd, &inner_index, &last_head);
+		produce_app_events(xsk_socket->cpu_id, prod_map_fd, tail_map_fd, &inner_index, &last_head);
 
 		if (cfg->xsk_poll_mode) {
 			ret = poll(fds, nfds, -1);
@@ -858,6 +883,11 @@ int main(int argc, char **argv)
 		exit(EXIT_FAIL_BPF);
 	}
 
+	int tail_map_fd = find_map_fd(xdp_program__bpf_obj(prog), "tail_app_hash");
+	if (tail_map_fd < 0) {
+		exit(EXIT_FAIL_BPF);
+	}
+
 	pthread_t threads[MAX_NUMBER_CORES];
 	cpu_set_t cpuset;
 	CPU_ZERO(&cpuset);
@@ -866,6 +896,7 @@ int main(int argc, char **argv)
 		arg->cfg = &cfg;
 		arg->xsk_socket = xsk_socket[i];
 		arg->prod_map_fd = prod_map_fd;
+		arg->tail_map_fd = tail_map_fd;
 		CPU_SET(i, &cpuset);
 		/* Receive and count packets than drop them */
 		pthread_create(&threads[i], NULL, producer_and_afxdp, (void *) arg);
