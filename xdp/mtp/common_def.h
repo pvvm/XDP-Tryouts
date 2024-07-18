@@ -22,6 +22,11 @@ enum minor_event_type {
     PROG_TEST,
 };
 
+enum timer_instances {
+    EP_TIMER_TEST,
+    EP_TIMER_TEST2,
+};
+
 struct flow_id {
     __u8 src_ip;
     __u8 src_port;
@@ -58,7 +63,7 @@ struct prog_event {
     enum minor_event_type event_type;
     struct flow_id ev_flow_id;
     __u64 value;
-    /*__u64 value1;
+    __u64 value1;
     __u64 value2;
     __u64 value3;
     __u64 value4;
@@ -73,7 +78,7 @@ struct prog_event {
     __u64 value13;
     __u64 value14;
     __u64 value15;
-    __u64 value16;
+    /*__u64 value16;
     __u64 value17;
     __u64 value18;
     __u64 value19;
