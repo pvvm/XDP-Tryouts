@@ -77,8 +77,8 @@ struct prog_event {
     __u64 value12;
     __u64 value13;
     __u64 value14;
-    __u64 value15;
-    /*__u64 value16;
+    /*__u64 value15;
+    __u64 value16;
     __u64 value17;
     __u64 value18;
     __u64 value19;
@@ -128,7 +128,6 @@ struct prog_event {
 struct timer_trigger {
     struct bpf_timer timer;
     struct timer_event t_event;
-    __u32 cpu_id;
     __u32 triggered;
 };
 
@@ -179,7 +178,6 @@ struct intermediate_output {
 };
 
 struct sched_loop_args {
-    __u32 cpu_id;
     struct flow_info *f_info;
     struct flow_id f_id;
 };

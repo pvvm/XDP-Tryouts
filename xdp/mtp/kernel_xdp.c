@@ -36,10 +36,10 @@ struct {
 /*--------------- XSK MAP ---------------*/
 
 struct {
-	__uint(type, BPF_MAP_TYPE_XSKMAP);
-	__type(key, __u32);
-	__type(value, __u32);
-	__uint(max_entries, MAX_NUMBER_CORES);
+    __uint(type, BPF_MAP_TYPE_XSKMAP);
+    __type(key, __u32);
+    __type(value, __u32);
+    __uint(max_entries, MAX_NUMBER_CORES);
 } xsks_map SEC(".maps");
 
 /*--------------- APP EVENT MAPS ---------------*/
@@ -190,17 +190,7 @@ struct {
 } context_hash SEC(".maps");
 
 
-/*---------------  ---------------*/
-
-struct {
-    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-    __type(key, __u32);
-    __type(value, struct prog_event);
-    __uint(max_entries, 1);
-} percpu_array SEC(".maps");
-
-
-static __always_inline int initialize_timer(struct timer_event, struct flow_id, __u32, __u64, enum timer_instances);
+static __always_inline int initialize_timer(struct timer_event, struct flow_id, __u64, enum timer_instances);
 
 
 // Note: make this function more complex in the future
@@ -332,7 +322,7 @@ static __always_inline int parse_packet(struct xdp_md *ctx, struct net_event *ne
 
     struct test *teste = pos;
     if (teste + 1 > data_end)
-		return -1;
+        return -1;
 
     pos = teste + 1;
     teste = data;
@@ -363,7 +353,9 @@ static __always_inline void update_app_len(struct app_info *app_info, struct flo
 }
 
 
-static __always_inline struct flow_info * find_flow_info(struct flow_id ev_flow_id, int cpu_id) {
+static __always_inline struct flow_info * find_flow_info(struct flow_id ev_flow_id) {
+    int cpu_id = bpf_get_smp_processor_id();
+
     struct inner_flow_info_hash *flow_info_hash = bpf_map_lookup_elem(&outer_flow_info_array, &cpu_id);
     if(!flow_info_hash) {
         bpf_printk("find_flow_info: Couldn't get entry from flow info outer map");
@@ -414,14 +406,14 @@ static __always_inline int try_to_enqueue(void * map, void * event,
     return 1;
 }
 
-static __always_inline void generic_event_enqueue(void * event, enum major_event_type type, int cpu_id) {
+static __always_inline void generic_event_enqueue(void * event, enum major_event_type type) {
     switch (type)
     {
     case PROG_EVENT:
     {
         bpf_printk("PROG_EVENT");
         struct prog_event enq_event = *(struct prog_event *) event;
-        struct flow_info *f_info = find_flow_info(enq_event.ev_flow_id, cpu_id);
+        struct flow_info *f_info = find_flow_info(enq_event.ev_flow_id);
         if(!f_info)
             return;
         if(!try_to_enqueue(&outer_prog_hash, event, enq_event.ev_flow_id, &(f_info->prog_info.len_prog_queue),
@@ -474,18 +466,7 @@ static __always_inline int next_flow(struct flow_id *flow, int cpu_id) {
     return 1;
 }*/
 
-static __always_inline int next_event(struct flow_info * f_info, int cpu_id) {
-    /*struct inner_flow_info_hash *flow_info_hash = bpf_map_lookup_elem(&outer_flow_info_array, &cpu_id);
-    if(!flow_info_hash) {
-        bpf_printk("next_event: Couldn't get entry from flow info outer map");
-        return -1;
-    }
-    struct flow_info *f_info = bpf_map_lookup_elem(flow_info_hash, &flow_id);
-    if(!f_info) {
-        bpf_printk("next_event: Couldn't get entry from flow info inner map");
-        return -1;
-    }*/
-    
+static __always_inline int next_event(struct flow_info * f_info) {
     // App, net, timer, prog. App has the lowest priority, timer has the highest
     __u32 type_priorities[3] = {1, 3, 2};
     type_priorities[0] *= f_info->app_info.len_app_queue;
@@ -587,10 +568,9 @@ static __always_inline void * generic_event_dequeue(void * outer_event_hash, str
 static __always_inline int timer_event_enqueue(void *map, struct flow_id *flow, struct timer_trigger *val) {
     struct timer_event event = val->t_event;
     event.valid_bit = 1;
-    __u32 cpu_id = val->cpu_id;
 
     bpf_printk("TIMER_EVENT");
-    struct flow_info *f_info = find_flow_info(event.ev_flow_id, cpu_id);
+    struct flow_info *f_info = find_flow_info(event.ev_flow_id);
     if(!f_info)
         return 0;
     __u64 * executing = &f_info->timer_info.executing_enqueue;
@@ -599,7 +579,6 @@ static __always_inline int timer_event_enqueue(void *map, struct flow_id *flow, 
 
     if(__sync_fetch_and_or(executing, 0)) {
         bpf_printk("try_to_enqueue_timer: timer enqueue currently executing");
-        // TODO: reset timer
         bpf_timer_start(&val->timer, ONE_SEC, 0);
         return 0;
     }
@@ -671,7 +650,7 @@ static __always_inline int timer_event_enqueue(void *map, struct flow_id *flow, 
 }*/
 
 static __always_inline int initialize_timer(struct timer_event event, struct flow_id flow,
-    __u32 cpu_id, __u64 time, enum timer_instances index) {
+    __u64 time, enum timer_instances index) {
 
     // Note: change here later when the hash MoM have entries initialized at userspace
     struct flow_id key = {0, 0, 0, 0};
@@ -703,7 +682,6 @@ static __always_inline int initialize_timer(struct timer_event event, struct flo
     }
 
     map_entry->t_event = event;
-    map_entry->cpu_id = cpu_id;
     map_entry->triggered = 1;
 
     long int err = bpf_timer_init(&(map_entry->timer), inner_map, CLOCK_BOOTTIME);
@@ -723,7 +701,7 @@ static __always_inline int initialize_timer(struct timer_event event, struct flo
 }
 
 static __always_inline void example_ep(struct net_event *event, struct context *ctx,
-    __u32 cpu_id, struct intermediate_output *inter_output) {
+    struct intermediate_output *inter_output) {
 
     struct prog_event new_prog_ev;
 
@@ -731,13 +709,13 @@ static __always_inline void example_ep(struct net_event *event, struct context *
     new_event.ev_flow_id = event->ev_flow_id;
     new_event.event_type = MISS_ACK;
     new_event.value = 0;
-    initialize_timer(new_event, new_event.ev_flow_id, cpu_id, TEN_SEC, EP_TIMER_TEST);
+    initialize_timer(new_event, new_event.ev_flow_id, TEN_SEC, EP_TIMER_TEST);
 
     for(int i = 0; i < 3; i++) {
         new_prog_ev.ev_flow_id = event->ev_flow_id;
         new_prog_ev.event_type = PROG_TEST;
         new_prog_ev.value = 0;
-        generic_event_enqueue(&new_prog_ev, PROG_EVENT, cpu_id);
+        generic_event_enqueue(&new_prog_ev, PROG_EVENT);
     }
 }
 
@@ -755,7 +733,7 @@ static __always_inline struct context * retrieve_ctx(struct flow_id flow) {
     return ctx;
 }
 
-static __always_inline void dispatcher(void * event, enum minor_event_type type, struct flow_id flow, __u32 cpu_id) {
+static __always_inline void dispatcher(void * event, enum minor_event_type type, struct flow_id flow) {
     struct context *ctx = retrieve_ctx(flow);
     struct intermediate_output inter_output;
 
@@ -772,7 +750,7 @@ static __always_inline void dispatcher(void * event, enum minor_event_type type,
     
     case ACK:
         bpf_printk("ACK");
-        example_ep(event, ctx, cpu_id, &inter_output);
+        example_ep(event, ctx, &inter_output);
         break;
     
     case MISS_ACK:
@@ -789,7 +767,6 @@ static __always_inline void dispatcher(void * event, enum minor_event_type type,
 }
 
 static long scheduler_loop(__u32 index, struct sched_loop_args * arg) {
-    __u32 cpu_id = arg->cpu_id;
     struct flow_info *f_info = arg->f_info;
     struct flow_id f_id = arg->f_id;
     //struct flow_id chosen_flow = arg->flow;
@@ -801,7 +778,7 @@ static long scheduler_loop(__u32 index, struct sched_loop_args * arg) {
     //bpf_printk("%d %d", chosen_flow.src_ip, chosen_flow.dest_ip);
     //bpf_printk("%d %d", chosen_flow.src_port, chosen_flow.dest_port);
 
-    int returned_type = next_event(f_info, cpu_id);
+    int returned_type = next_event(f_info);
     if(returned_type == -1)
         return 1;
 
@@ -825,7 +802,7 @@ static long scheduler_loop(__u32 index, struct sched_loop_args * arg) {
         new_ev.value = new_ev.value;
         // Set occupied bit to 0
         __sync_fetch_and_xor(&ev->occupied, 1);
-        dispatcher(&new_ev, new_ev.event_type, new_ev.ev_flow_id, cpu_id);
+        dispatcher(&new_ev, new_ev.event_type, new_ev.ev_flow_id);
         break;
     }
     
@@ -836,7 +813,7 @@ static long scheduler_loop(__u32 index, struct sched_loop_args * arg) {
             &(f_info->timer_info.len_timer_queue), &(f_info->timer_info.timer_head));
         if(!ev)
             return 1;
-        dispatcher(ev, ev->event_type, ev->ev_flow_id, cpu_id);
+        dispatcher(ev, ev->event_type, ev->ev_flow_id);
         break;
     }
     
@@ -847,7 +824,7 @@ static long scheduler_loop(__u32 index, struct sched_loop_args * arg) {
             &(f_info->prog_info.len_prog_queue), &(f_info->prog_info.prog_head));
         if(!ev)
             return 1;
-        dispatcher(ev, ev->event_type, ev->ev_flow_id, cpu_id);
+        dispatcher(ev, ev->event_type, ev->ev_flow_id);
         break;
     }
     
@@ -856,23 +833,6 @@ static long scheduler_loop(__u32 index, struct sched_loop_args * arg) {
     }
     return 0;
 }
-
-
-/*static __always_inline void scheduler(void * event, enum major_event_type major_type,
-    struct xdp_md *ctx, int cpu_id) {
-
-    event_enqueue(event, major_type, cpu_id);
-
-    //struct net_event teste = *(struct net_event *) event;
-    //bpf_printk("%d %d", teste.ev_flow_id.src_ip, teste.ev_flow_id.dest_ip);
-    //bpf_printk("%d %d", teste.ev_flow_id.src_port, teste.ev_flow_id.dest_port);
-
-    struct sched_loop_args arg = {cpu_id};
-
-    // Note: this constant is a placeholder. In the future, we'll have a variable
-    // that will dictate the amount of times the loop is executed
-    bpf_loop(MAX_NUM_PROCESSED_EVENTS, scheduler_loop, &arg, 0);
-}*/
 
 // TODO: think about other name for this module
 SEC("xdp")
@@ -886,14 +846,11 @@ int rx_module(struct xdp_md *ctx)
     if(!parse_packet(ctx, &net_ev))
         return XDP_DROP;
 
-    int cpu = bpf_get_smp_processor_id();
-
     // Process network event first
-    dispatcher(&net_ev, net_ev.event_type, net_ev.ev_flow_id, cpu);
+    dispatcher(&net_ev, net_ev.event_type, net_ev.ev_flow_id);
 
     struct sched_loop_args arg;
-    arg.cpu_id = cpu;
-    arg.f_info = find_flow_info(net_ev.ev_flow_id, cpu);
+    arg.f_info = find_flow_info(net_ev.ev_flow_id);
     arg.f_id = net_ev.ev_flow_id;
     if(!arg.f_info)
         return XDP_DROP;
@@ -920,7 +877,7 @@ int rx_module(struct xdp_md *ctx)
         value->latency += (finish_time - arrival_time);*/
         //bpf_printk("TEST %d %d", cpu, rx_queue_index);
         return bpf_redirect_map(&xsks_map, rx_queue_index, 0);
-	}
+    }
 
     return XDP_DROP;
 }
