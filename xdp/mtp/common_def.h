@@ -77,9 +77,9 @@ struct prog_event {
     __u64 value12;
     __u64 value13;
     __u64 value14;
-    /*__u64 value15;
+    __u64 value15;
     __u64 value16;
-    __u64 value17;
+    /*__u64 value17;
     __u64 value18;
     __u64 value19;
     __u64 value20;
@@ -180,6 +180,7 @@ struct intermediate_output {
 struct sched_loop_args {
     struct flow_info *f_info;
     struct flow_id f_id;
+    struct context *ctx;
 };
 
 struct timer_loop_args {

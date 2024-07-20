@@ -44,7 +44,7 @@
 
 static const char *default_filename = "kernel_xdp.o";
 
-static const char *default_progname = "rx_module";
+static const char *default_progname = "net_arrive";
 
 static struct xdp_program *prog;
 int xsk_map_fd;

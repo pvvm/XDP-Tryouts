@@ -704,14 +704,14 @@ static __always_inline void example_ep(struct net_event *event, struct context *
     struct intermediate_output *inter_output) {
 
     struct prog_event new_prog_ev;
-
+    
     struct timer_event new_event;
     new_event.ev_flow_id = event->ev_flow_id;
     new_event.event_type = MISS_ACK;
     new_event.value = 0;
     initialize_timer(new_event, new_event.ev_flow_id, TEN_SEC, EP_TIMER_TEST);
 
-    for(int i = 0; i < 3; i++) {
+    for(int i = 0; i < 2; i++) {
         new_prog_ev.ev_flow_id = event->ev_flow_id;
         new_prog_ev.event_type = PROG_TEST;
         new_prog_ev.value = 0;
@@ -733,14 +733,10 @@ static __always_inline struct context * retrieve_ctx(struct flow_id flow) {
     return ctx;
 }
 
-static __always_inline void dispatcher(void * event, enum minor_event_type type, struct flow_id flow) {
-    struct context *ctx = retrieve_ctx(flow);
-    struct intermediate_output inter_output;
+static __always_inline void dispatcher(void * event, enum minor_event_type type,
+    struct context *ctx) {
 
-    if(!ctx) {
-        bpf_printk("dispatcher: Couldn't retrive ctx");
-        return;
-    }
+    struct intermediate_output inter_output;
 
     switch (type)
     {
@@ -766,92 +762,118 @@ static __always_inline void dispatcher(void * event, enum minor_event_type type,
     }
 }
 
-static long scheduler_loop(__u32 index, struct sched_loop_args * arg) {
+static __always_inline void * scheduler(struct sched_loop_args * arg, __u8 * is_app_event,
+    __u32 *minor_type) {
     struct flow_info *f_info = arg->f_info;
     struct flow_id f_id = arg->f_id;
-    //struct flow_id chosen_flow = arg->flow;
-    //struct flow_id chosen_flow = {0, 0, 0, 0};
-    /*struct flow_id chosen_flow;
-    if(!next_flow(&chosen_flow, cpu_id))
-        return 1;*/
-
-    //bpf_printk("%d %d", chosen_flow.src_ip, chosen_flow.dest_ip);
-    //bpf_printk("%d %d", chosen_flow.src_port, chosen_flow.dest_port);
 
     int returned_type = next_event(f_info);
     if(returned_type == -1)
-        return 1;
+        return 0;
 
-    /*struct flow_info *f_info = find_flow_info(chosen_flow, cpu_id);
-    if(!f_info)
-        return 1;*/
+    void * ev;
 
     switch (returned_type)
     {
     case APP_EVENT:
     {
         bpf_printk("APP_EVENT IS THE LARGEST");
-        struct app_event * ev = (struct app_event *) generic_event_dequeue(&outer_app_hash, f_id,
+        ev = generic_event_dequeue(&outer_app_hash, f_id,
             &(f_info->app_info.len_app_queue), &(f_info->app_info.app_head));
         if(!ev)
-            return 1;
-        struct app_event new_ev;
-        new_ev.ev_flow_id = ev->ev_flow_id;
-        new_ev.event_type = ev->event_type;
-        new_ev.occupied = ev->occupied;
-        new_ev.value = new_ev.value;
-        // Set occupied bit to 0
-        __sync_fetch_and_xor(&ev->occupied, 1);
-        dispatcher(&new_ev, new_ev.event_type, new_ev.ev_flow_id);
+            return NULL;
+        struct app_event * cast_ev = (struct app_event *) ev;
+        *minor_type = cast_ev->event_type;
+        *is_app_event = 1;
         break;
     }
     
     case TIMER_EVENT:
     {
         bpf_printk("TIMER_EVENT IS THE LARGEST");
-        struct timer_event * ev = (struct timer_event *) timer_event_dequeue(f_id,
+        ev = timer_event_dequeue(f_id,
             &(f_info->timer_info.len_timer_queue), &(f_info->timer_info.timer_head));
         if(!ev)
-            return 1;
-        dispatcher(ev, ev->event_type, ev->ev_flow_id);
+            return NULL;
+        struct timer_event * cast_ev = (struct timer_event *) ev;
+        *minor_type = cast_ev->event_type;
         break;
     }
     
     case PROG_EVENT:
     {
         bpf_printk("PROG_EVENT IS THE LARGEST");
-        struct prog_event * ev = (struct prog_event *) generic_event_dequeue(&outer_prog_hash, f_id,
+        ev = generic_event_dequeue(&outer_prog_hash, f_id,
             &(f_info->prog_info.len_prog_queue), &(f_info->prog_info.prog_head));
         if(!ev)
-            return 1;
-        dispatcher(ev, ev->event_type, ev->ev_flow_id);
+            return NULL;
+        struct prog_event * cast_ev = (struct prog_event *) ev;
+        *minor_type = cast_ev->event_type;
         break;
     }
     
     default:
-        return 1;
+        return NULL;
     }
+    return ev;
+}
+
+static long ev_process_loop(__u32 index, struct sched_loop_args * arg) {
+    __u8 is_app_event = 0;
+    __u32 minor_type;
+    void * ev = scheduler(arg, &is_app_event, &minor_type);
+    if(!ev)
+        return 1;
+
+    if(is_app_event) {
+        struct app_event *app_ev = (struct app_event *)ev;
+        struct app_event new_ev;
+        new_ev.ev_flow_id = app_ev->ev_flow_id;
+        new_ev.event_type = app_ev->event_type;
+        new_ev.occupied = app_ev->occupied;
+        new_ev.value = app_ev->value;
+        // Set occupied bit to 0
+        __sync_fetch_and_xor(&app_ev->occupied, 1);
+        dispatcher(&new_ev, minor_type, arg->ctx);
+    } else {
+        dispatcher(ev, minor_type, arg->ctx);
+    }
+
     return 0;
 }
 
-// TODO: think about other name for this module
-SEC("xdp")
-int rx_module(struct xdp_md *ctx)
-{
-    //__u64 arrival_time = bpf_ktime_get_ns();
+static __always_inline int net_ev_process(struct xdp_md *ctx, struct flow_id * f_id,
+    struct context **flow_context) {
 
-    //ctx->data_end += 5;
     struct net_event net_ev;
 
     if(!parse_packet(ctx, &net_ev))
-        return XDP_DROP;
+        return 0;
 
-    // Process network event first
-    dispatcher(&net_ev, net_ev.event_type, net_ev.ev_flow_id);
+    *f_id = net_ev.ev_flow_id;
+    *flow_context = retrieve_ctx(*f_id);
+    if(!(*flow_context)) {
+        bpf_printk("net_ev_process: Couldn't retrive ctx");
+        return 0;
+    }
+
+    dispatcher(&net_ev, net_ev.event_type, *flow_context);
+
+    return 1;
+}
+
+SEC("xdp")
+int net_arrive(struct xdp_md *ctx)
+{
+    __u64 arrival_time = bpf_ktime_get_ns();
 
     struct sched_loop_args arg;
-    arg.f_info = find_flow_info(net_ev.ev_flow_id);
-    arg.f_id = net_ev.ev_flow_id;
+    arg.ctx = NULL;
+
+    // Process network event first
+    if(!net_ev_process(ctx, &arg.f_id, &arg.ctx))
+        return XDP_DROP;
+    arg.f_info = find_flow_info(arg.f_id);
     if(!arg.f_info)
         return XDP_DROP;
 
@@ -859,22 +881,21 @@ int rx_module(struct xdp_md *ctx)
     //bpf_printk("\n%d %d\n", arg.f_info->timer_info.len_timer_queue, arg.f_info->app_info.len_app_queue);
     //bpf_printk("\n%d\n", arg.f_info->prog_info.len_prog_queue);
 
-    bpf_loop(MAX_NUM_PROCESSED_EVENTS, scheduler_loop, &arg, 0);
+    bpf_loop(MAX_NUM_PROCESSED_EVENTS, ev_process_loop, &arg, 0);
 
     //modify_fake_packet(ctx);
-
-    //initialize_timer(cpu);
 
     /* An entry here means that the correspnding queue_id
      * has an active AF_XDP socket bound to it. */
     int rx_queue_index = ctx->rx_queue_index;
     if (bpf_map_lookup_elem(&xsks_map, &rx_queue_index)) {
-        /*__u64 finish_time = bpf_ktime_get_ns();
+        __u64 finish_time = bpf_ktime_get_ns();
+        int cpu = bpf_get_smp_processor_id();
         struct info *value = bpf_map_lookup_elem(&info_array, &cpu);
         if(!value)
             return XDP_DROP;
         value->counter += 1;
-        value->latency += (finish_time - arrival_time);*/
+        value->latency += (finish_time - arrival_time);
         //bpf_printk("TEST %d %d", cpu, rx_queue_index);
         return bpf_redirect_map(&xsks_map, rx_queue_index, 0);
     }
@@ -884,3 +905,4 @@ int rx_module(struct xdp_md *ctx)
 // TODO: compare before and after doing the simplifications
 
 char _license[] SEC("license") = "GPL";
+
