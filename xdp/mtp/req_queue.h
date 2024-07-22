@@ -76,7 +76,7 @@ void print_queue(struct req_queue *queue) {
         printf("\nQueue CPU %d: ", i);
         node = queue->first[i];
         while(node != NULL) {
-            printf("%lld ", node->event.value);
+            //printf("%lld ", node->event.value);
             node = node->next;
         }
     }
@@ -135,7 +135,7 @@ void print_queue_v2(struct req_queue_v2 *queue) {
         atomic_uint curr_head = atomic_load_explicit(&queue[i].head, memory_order_relaxed);
         printf("\nCPU %d: ", i);
         while(curr_head != atomic_load_explicit(&queue[i].tail, memory_order_relaxed)) {
-            printf("%lld ", queue[i].req_queue[curr_head].value);
+            //printf("%lld ", queue[i].req_queue[curr_head].value);
             curr_head = (curr_head + 1) % MAX_NUMBER_PROG_EVENTS;
         }
     }

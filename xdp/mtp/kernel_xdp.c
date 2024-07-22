@@ -189,6 +189,16 @@ struct {
     __uint(max_entries, MAX_NUMBER_FLOWS);
 } context_hash SEC(".maps");
 
+/*--------------- WINDOW ARRAY ---------------*/
+
+#define WINDOW_SIZE 5
+struct
+{
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, WINDOW_SIZE);
+    __type(key, __u32);
+    __type(value, struct packet_event);
+} window_packets SEC(".maps");
 
 static __always_inline int initialize_timer(struct timer_event, struct flow_id, __u64, enum timer_instances);
 
@@ -291,6 +301,12 @@ static __always_inline int parse_packet(struct xdp_md *ctx, struct net_event *ne
         return 0;
     }
 
+    net_ev->ack_seq = bpf_ntohl(tcph->ack_seq);
+    net_ev->ev_flow_id.src_ip = 0;
+    net_ev->ev_flow_id.src_port = 0;
+    net_ev->ev_flow_id.dest_ip = 0;
+    net_ev->ev_flow_id.dest_port = 0;
+
     __be16 sport = bpf_ntohs(tcph->source);
     __u8 src_port;
     src_port = sport & 0xFF;
@@ -375,58 +391,58 @@ static __always_inline struct flow_info * find_flow_info(struct flow_id ev_flow_
     return f_info;
 }
 
-static __always_inline int try_to_enqueue(void * map, void * event,
-    struct flow_id flow, int * queue_len, int *tail) {
+// static __always_inline int try_to_enqueue(void * map, void * event,
+//     struct flow_id flow, int * queue_len, int *tail) {
 
-    if(*queue_len == MAX_EVENT_QUEUE_LEN - 1) {
-        bpf_printk("Queue is full: unable to enqueue event");
-        return 0;
-    }
+//     if(*queue_len == MAX_EVENT_QUEUE_LEN - 1) {
+//         bpf_printk("Queue is full: unable to enqueue event");
+//         return 0;
+//     }
 
-    // Note: change here after I update userspace program to establish entries to hash MoM
-    struct flow_id key = {0, 0, 0, 0};
-    void *inner_array = bpf_map_lookup_elem(map, &key);
-    if(!inner_array) {
-        bpf_printk("try_to_enqueue: Couldn't get entry from outer map");
-        return 0;
-    }
+//     // Note: change here after I update userspace program to establish entries to hash MoM
+//     struct flow_id key = {0, 0, 0, 0};
+//     void *inner_array = bpf_map_lookup_elem(map, &key);
+//     if(!inner_array) {
+//         bpf_printk("try_to_enqueue: Couldn't get entry from outer map");
+//         return 0;
+//     }
 
-    if(bpf_map_update_elem(inner_array, tail, event, BPF_ANY)) {
-        bpf_printk("try_to_enqueue: Couldn't update entry from inner map");
-        return 0;
-    }
+//     if(bpf_map_update_elem(inner_array, tail, event, BPF_ANY)) {
+//         bpf_printk("try_to_enqueue: Couldn't update entry from inner map");
+//         return 0;
+//     }
 
-    if(*tail < MAX_EVENT_QUEUE_LEN - 1)
-        *tail += 1;
-    else
-        *tail = 0;
+//     if(*tail < MAX_EVENT_QUEUE_LEN - 1)
+//         *tail += 1;
+//     else
+//         *tail = 0;
     
-    *queue_len += 1;
+//     *queue_len += 1;
     
-    return 1;
-}
+//     return 1;
+// }
 
-static __always_inline void generic_event_enqueue(void * event, enum major_event_type type) {
-    switch (type)
-    {
-    case PROG_EVENT:
-    {
-        bpf_printk("PROG_EVENT");
-        struct prog_event enq_event = *(struct prog_event *) event;
-        struct flow_info *f_info = find_flow_info(enq_event.ev_flow_id);
-        if(!f_info)
-            return;
-        if(!try_to_enqueue(&outer_prog_hash, event, enq_event.ev_flow_id, &(f_info->prog_info.len_prog_queue),
-            &(f_info->prog_info.prog_tail))) {
-            bpf_printk("Unable to enqueue PROG_EVENT");
-        }
-        break;
-    }
+// static __always_inline void generic_event_enqueue(void * event, enum major_event_type type) {
+//     switch (type)
+//     {
+//     case PROG_EVENT:
+//     {
+//         bpf_printk("PROG_EVENT");
+//         struct prog_event enq_event = *(struct prog_event *) event;
+//         struct flow_info *f_info = find_flow_info(enq_event.ev_flow_id);
+//         if(!f_info)
+//             return;
+//         if(!try_to_enqueue(&outer_prog_hash, event, enq_event.ev_flow_id, &(f_info->prog_info.len_prog_queue),
+//             &(f_info->prog_info.prog_tail))) {
+//             bpf_printk("Unable to enqueue PROG_EVENT");
+//         }
+//         break;
+//     }
     
-    default:
-        return;
-    }
-}
+//     default:
+//         return;
+//     }
+// }
 
 /*static __u64 loop_hash_info(struct bpf_map *map, struct flow_id *key, struct flow_info *val, struct flow_loop_data *data) {
     __u32 current_max = data->len_app_queue + data->len_net_queue + data->len_timer_queue + data->len_prog_queue;
@@ -700,29 +716,139 @@ static __always_inline int initialize_timer(struct timer_event event, struct flo
     return 0;
 }
 
-static __always_inline void example_ep(struct net_event *event, struct context *ctx,
-    struct intermediate_output *inter_output) {
+static __always_inline int send_packet(struct packet_event *pe) {
+    bpf_printk("send packet: %u", pe->seq_num);
+    return 1;
+}
 
-    struct prog_event new_prog_ev;
-    
+static __always_inline int window_enque(struct packet_event *pe, struct flow_id *fid) {
+    struct context *tcp_ctx = bpf_map_lookup_elem(&context_hash, fid);
+    if(!tcp_ctx) {
+        bpf_printk("\ntcp_ctx does not exist with the fid");
+        return 0;
+    }
+    // Check if the window is full
+    if(tcp_ctx->cur_size == tcp_ctx->window_size) {
+        bpf_printk("The window is full, the packet cannot be added");
+        return 0;
+    }
+    // Add the packet
+    send_packet(pe);
+    __u32 key = (tcp_ctx->head + tcp_ctx->cur_size) % tcp_ctx->window_size;
+    bpf_map_update_elem(&window_packets, &key, pe, BPF_ANY);
+    tcp_ctx->cur_size += 1;
+    bpf_map_update_elem(&context_hash, fid, tcp_ctx, BPF_ANY);
+    return 1;
+}
+
+static __always_inline int window_deque(struct flow_id *fid) {
+    struct context *tcp_ctx = bpf_map_lookup_elem(&context_hash, fid);
+    if(!tcp_ctx) {
+        bpf_printk("\ntcp_ctx does not exist with the fid");
+        return 0;
+    }
+    // Check if the window is empty
+    if(tcp_ctx->cur_size == 0) {
+        bpf_printk("The window is empty, no packet can be removed");
+        return 0;
+    }
+    // Remove the packet
+    struct packet_event *pe = bpf_map_lookup_elem(&window_packets, &tcp_ctx->head);
+    if(!pe) {
+        bpf_printk("The remove packet does not exist");
+        return 0;
+    }
+    tcp_ctx->head = (tcp_ctx->head + 1) % tcp_ctx->window_size;
+    tcp_ctx->cur_size -= 1;
+    bpf_map_update_elem(&context_hash, fid, tcp_ctx, BPF_ANY);
+    return 1;
+}
+
+static long app_event_send(__u32 index, struct flow_id *fid) {
+    struct context *tcp_ctx = bpf_map_lookup_elem(&context_hash, fid);
+    if(!tcp_ctx) {
+        bpf_printk("\ntcp_ctx does not exist with the fid\n");
+        return 0;
+    }
+    struct packet_event pe;
+    __builtin_memset(&pe, 0, sizeof(pe));
+    pe.fid = fid;
+    pe.size =tcp_ctx->segment_size;
+    pe.seq_num = tcp_ctx->last_seq_sent + 1;
+    window_enque(&pe, fid);
+    tcp_ctx->last_seq_sent += 1;
+    bpf_map_update_elem(&context_hash, fid, tcp_ctx, BPF_ANY);
+    return 0;
+}
+
+static __always_inline void app_event_processor(struct app_event *event, struct context *ctx,
+    struct intermediate_output *inter_output) {
+    // Update window:
+    int num_to_send = WINDOW_SIZE - ctx->cur_size;
+    bpf_loop(num_to_send, app_event_send, &event->ev_flow_id, 0);
+    // Create timer event and start timer:
     struct timer_event new_event;
     new_event.ev_flow_id = event->ev_flow_id;
     new_event.event_type = MISS_ACK;
-    new_event.value = 0;
+    new_event.seq_num = ctx->window_start_seq;
     initialize_timer(new_event, new_event.ev_flow_id, TEN_SEC, EP_TIMER_TEST);
+}
 
-    for(int i = 0; i < 2; i++) {
-        new_prog_ev.ev_flow_id = event->ev_flow_id;
-        new_prog_ev.event_type = PROG_TEST;
-        new_prog_ev.value = 0;
-        generic_event_enqueue(&new_prog_ev, PROG_EVENT);
+static long update_window(__u32 index, struct flow_id *fid) {
+    struct context *tcp_ctx = bpf_map_lookup_elem(&context_hash, fid);
+    if(!tcp_ctx) {
+        bpf_printk("\ntcp_ctx does not exist with the fid\n");
+        return 0;
+    }
+    window_deque(fid);
+    if(tcp_ctx->data_size == tcp_ctx->last_seq_sent + 1) {
+        return 0;
+    }
+    struct packet_event pe;
+    __builtin_memset(&pe, 0, sizeof(pe));
+    pe.fid = fid;
+    pe.size =tcp_ctx->segment_size;
+    pe.seq_num = tcp_ctx->last_seq_sent + 1;
+    window_enque(&pe, fid);
+    tcp_ctx->last_seq_sent += 1;
+    bpf_map_update_elem(&context_hash, fid, tcp_ctx, BPF_ANY);
+    return 0;
+}
+
+static __always_inline void net_event_processor(struct net_event *event, struct context *ctx,
+    struct intermediate_output *inter_output) {
+    //Update window
+    if(event->ack_seq <= ctx->window_start_seq) return;
+    bpf_printk("Received ack: %u", event->ack_seq);
+    int data_rest = ctx->data_size - (ctx->last_seq_sent + 1);
+    if(data_rest == 0 && event->ack_seq == ctx->last_seq_sent + 1) {
+        bpf_printk("All packets sent and received");
+        return;
+    }
+    int num_to_send = event->ack_seq - ctx->window_start_seq;
+    ctx->window_start_seq = event->ack_seq;
+    bpf_map_update_elem(&context_hash, &event->ev_flow_id, ctx, BPF_ANY);
+    bpf_loop(num_to_send, update_window, &event->ev_flow_id, 0);
+    //Placeholder for reset timer
+}
+
+static __always_inline void timer_event_processor(struct timer_event *event, struct context *ctx,
+    struct intermediate_output *inter_output) {
+    // Resend packet
+    if(ctx->window_start_seq == event->seq_num) {
+        struct packet_event *pe = bpf_map_lookup_elem(&window_packets, &ctx->head);
+        if(!pe) {
+            bpf_printk("Resent packet not found");
+            return;
+        }
+        send_packet(pe);
     }
 }
 
 static __always_inline struct context * retrieve_ctx(struct flow_id flow) {
     struct context *ctx = bpf_map_lookup_elem(&context_hash, &flow);
     if(!ctx) {
-        struct context new_ctx = {0, 0, 0};
+        struct context new_ctx = {1, 5, 0, -1, 0, 0, 0};
         bpf_map_update_elem(&context_hash, &flow, &new_ctx, BPF_NOEXIST);
         ctx = bpf_map_lookup_elem(&context_hash, &flow);
         if(!ctx) {
@@ -742,15 +868,17 @@ static __always_inline void dispatcher(void * event, enum minor_event_type type,
     {
     case SEND:
         bpf_printk("SEND");
+        app_event_processor(event, ctx, &inter_output);
         break;
     
     case ACK:
         bpf_printk("ACK");
-        example_ep(event, ctx, &inter_output);
+        net_event_processor(event, ctx, &inter_output);
         break;
     
     case MISS_ACK:
         bpf_printk("MISS_ACK");
+        timer_event_processor(event, ctx, &inter_output);
         break;
     
     case PROG_TEST:
@@ -831,7 +959,7 @@ static long ev_process_loop(__u32 index, struct sched_loop_args * arg) {
         new_ev.ev_flow_id = app_ev->ev_flow_id;
         new_ev.event_type = app_ev->event_type;
         new_ev.occupied = app_ev->occupied;
-        new_ev.value = app_ev->value;
+        new_ev.data_size = app_ev->data_size;
         // Set occupied bit to 0
         __sync_fetch_and_xor(&app_ev->occupied, 1);
         dispatcher(&new_ev, minor_type, arg->ctx);

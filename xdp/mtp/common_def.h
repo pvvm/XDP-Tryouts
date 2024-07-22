@@ -42,21 +42,26 @@ struct app_event {
     enum minor_event_type event_type;
     struct flow_id ev_flow_id;
     __u64 occupied;
-    __u64 value;
+    __u64 data_size;
 };
 
 struct net_event {
     enum minor_event_type event_type;
     struct flow_id ev_flow_id;
-    __u64 value;
+    __u64 ack_seq;
 };
 
 struct timer_event {
     enum minor_event_type event_type;
     struct flow_id ev_flow_id;
-    __u64 value;
-
     __u64 valid_bit;
+    __u64 seq_num;
+};
+
+struct packet_event {
+    struct flow_id *fid;
+    int seq_num;
+    __u32 size;
 };
 
 struct prog_event {
@@ -168,9 +173,21 @@ struct flow_loop_data {
 };
 
 struct context {
-    __u32 value1;
-    __u32 value2;
-    __u32 value3;
+    // Maximum size of data in a packet
+    __u32 segment_size;
+    // Window size
+    __u32 window_size;
+    // The sequence number of the first packet in the window
+    __u32 window_start_seq;
+    // The last sequence number sent
+    int last_seq_sent;
+    // Circular queue(the actual window stores sent packets): 
+    // The head of the circular queue
+    __u32 head;
+    // The current size of the circular queue
+    __u32 cur_size;
+    // Unsent data size
+    __u32 data_size;
 };
 
 struct intermediate_output {
