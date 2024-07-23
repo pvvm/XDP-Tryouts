@@ -301,12 +301,6 @@ static __always_inline int parse_packet(struct xdp_md *ctx, struct net_event *ne
         return 0;
     }
 
-    net_ev->ack_seq = bpf_ntohl(tcph->ack_seq);
-    net_ev->ev_flow_id.src_ip = 0;
-    net_ev->ev_flow_id.src_port = 0;
-    net_ev->ev_flow_id.dest_ip = 0;
-    net_ev->ev_flow_id.dest_port = 0;
-
     __be16 sport = bpf_ntohs(tcph->source);
     __u8 src_port;
     src_port = sport & 0xFF;
@@ -318,7 +312,13 @@ static __always_inline int parse_packet(struct xdp_md *ctx, struct net_event *ne
     dst_port = dport & 0xFF;
     dst_port = ((dport >> 8) & 0xFF) ^ dst_port;
     net_ev->ev_flow_id.dest_port = dst_port;
-    
+
+    net_ev->ack_seq = bpf_ntohl(tcph->ack_seq);
+    net_ev->ev_flow_id.src_ip = 0;
+    net_ev->ev_flow_id.src_port = 0;
+    net_ev->ev_flow_id.dest_ip = 0;
+    net_ev->ev_flow_id.dest_port = 0;
+
     /*bpf_printk("\nDestination port: %d\n\n", num);
     tcph->dest = bpf_htons(bpf_ntohs(tcph->dest) - 1);*/
 
@@ -783,7 +783,7 @@ static __always_inline int send_packet(struct packet_event *pe) {
 static __always_inline int window_enque(struct packet_event *pe, struct flow_id *fid) {
     struct context *tcp_ctx = bpf_map_lookup_elem(&context_hash, fid);
     if(!tcp_ctx) {
-        bpf_printk("\ntcp_ctx does not exist with the fid");
+        bpf_printk("tcp_ctx does not exist with the fid");
         return 0;
     }
     // Check if the window is full
@@ -803,7 +803,7 @@ static __always_inline int window_enque(struct packet_event *pe, struct flow_id 
 static __always_inline int window_deque(struct flow_id *fid) {
     struct context *tcp_ctx = bpf_map_lookup_elem(&context_hash, fid);
     if(!tcp_ctx) {
-        bpf_printk("\ntcp_ctx does not exist with the fid");
+        bpf_printk("tcp_ctx does not exist with the fid");
         return 0;
     }
     // Check if the window is empty
@@ -826,7 +826,7 @@ static __always_inline int window_deque(struct flow_id *fid) {
 static long app_event_send(__u32 index, struct flow_id *fid) {
     struct context *tcp_ctx = bpf_map_lookup_elem(&context_hash, fid);
     if(!tcp_ctx) {
-        bpf_printk("\ntcp_ctx does not exist with the fid\n");
+        bpf_printk("tcp_ctx does not exist with the fid\n");
         return 0;
     }
     struct packet_event pe;
@@ -844,7 +844,8 @@ static __always_inline void app_event_processor(struct app_event *event, struct 
     struct intermediate_output *inter_output) {
     // Update window:
     int num_to_send = WINDOW_SIZE - ctx->cur_size;
-    bpf_loop(num_to_send, app_event_send, &event->ev_flow_id, 0);
+    struct flow_id fid = event->ev_flow_id;
+    bpf_loop(num_to_send, app_event_send, &fid, 0);
     // Create timer event and start timer:
     struct timer_event new_event;
     new_event.ev_flow_id = event->ev_flow_id;
@@ -856,7 +857,7 @@ static __always_inline void app_event_processor(struct app_event *event, struct 
 static long update_window(__u32 index, struct flow_id *fid) {
     struct context *tcp_ctx = bpf_map_lookup_elem(&context_hash, fid);
     if(!tcp_ctx) {
-        bpf_printk("\ntcp_ctx does not exist with the fid\n");
+        bpf_printk("tcp_ctx does not exist with the fid\n");
         return 0;
     }
     window_deque(fid);
@@ -888,7 +889,8 @@ static __always_inline void net_event_processor(struct net_event *event, struct 
     int num_to_send = event->ack_seq - ctx->window_start_seq;
     ctx->window_start_seq = event->ack_seq;
     bpf_map_update_elem(&context_hash, &event->ev_flow_id, ctx, BPF_ANY);
-    bpf_loop(num_to_send, update_window, &event->ev_flow_id, 0);
+    struct flow_id fid = event->ev_flow_id;
+    bpf_loop(num_to_send, update_window, &fid, 0);
     //Placeholder for reset timer
     restart_timer(event->ev_flow_id, TEN_SEC, EP_TIMER_TEST);
 }
@@ -1055,7 +1057,6 @@ SEC("xdp")
 int net_arrive(struct xdp_md *ctx)
 {
     //__u64 arrival_time = bpf_ktime_get_ns();
-
     struct sched_loop_args arg;
     arg.ctx = NULL;
 
