@@ -190,7 +190,7 @@ struct {
 } context_hash SEC(".maps");
 
 
-static __always_inline int initialize_timer(struct timer_event, struct flow_id, __u64, enum timer_instances);
+static __always_inline int initialize_timer(struct timer_event, __u64, enum timer_instances);
 
 
 // Note: make this function more complex in the future
@@ -649,13 +649,72 @@ static __always_inline int timer_event_enqueue(void *map, struct flow_id *flow, 
     return 0;
 }*/
 
-static __always_inline int initialize_timer(struct timer_event event, struct flow_id flow,
+static __always_inline int cancel_timer(struct flow_id flow,
+    enum timer_instances index) {
+
+    struct flow_id key = {0, 0, 0, 0};
+    struct timer_trigger_inner_array * inner_map = bpf_map_lookup_elem(&timer_trigger_outer_hash, &key);
+    //struct timer_trigger_inner_array * inner_map = bpf_map_lookup_elem(&timer_trigger_outer_hash, &event->ev_flow_id);
+    if(!inner_map) {
+        bpf_printk("cancel_timer: Couldn't find outer map entry");
+        return -1;
+    }
+    struct timer_trigger *map_entry = bpf_map_lookup_elem(inner_map, &index);
+    if(!map_entry) {
+        bpf_printk("cancel_timer: Couldn't find inner map entry");
+        return -1;
+    }
+
+    if(!map_entry->triggered) {
+        bpf_printk("cancel_timer: timer isn't currently triggered");
+        return -1;
+    }
+
+    if(!bpf_timer_cancel(&(map_entry->timer))) {
+        bpf_printk("cancel_timer: couldn't cancel timer");
+        return -1;
+    }
+
+    return 0;
+}
+
+static __always_inline int restart_timer(struct flow_id flow, __u64 time,
+    enum timer_instances index) {
+
+    // Note: change here later when the hash MoM have entries initialized at userspace
+    struct flow_id key = {0, 0, 0, 0};
+    struct timer_trigger_inner_array * inner_map = bpf_map_lookup_elem(&timer_trigger_outer_hash, &key);
+    //struct timer_trigger_inner_array * inner_map = bpf_map_lookup_elem(&timer_trigger_outer_hash, &event->ev_flow_id);
+    if(!inner_map) {
+        bpf_printk("restart_timer: Couldn't find outer map entry");
+        return -1;
+    }
+    struct timer_trigger *map_entry = bpf_map_lookup_elem(inner_map, &index);
+    if(!map_entry) {
+        bpf_printk("restart_timer: Couldn't find inner map entry");
+        return -1;
+    }
+
+    if(!map_entry->triggered) {
+        bpf_printk("restart_timer: timer isn't currently triggered");
+        return -1;
+    }
+
+    if(bpf_timer_start(&(map_entry->timer), time, 0) != 0) {
+        bpf_printk("restart_timer: couldn't restart timer");
+        return -1;
+    }
+
+    return 0;
+}
+
+static __always_inline int initialize_timer(struct timer_event event,
     __u64 time, enum timer_instances index) {
 
     // Note: change here later when the hash MoM have entries initialized at userspace
     struct flow_id key = {0, 0, 0, 0};
     struct timer_trigger_inner_array * inner_map = bpf_map_lookup_elem(&timer_trigger_outer_hash, &key);
-    //struct timer_trigger_inner_array * inner_map = bpf_map_lookup_elem(&timer_trigger_outer_hash, &flow);
+    //struct timer_trigger_inner_array * inner_map = bpf_map_lookup_elem(&timer_trigger_outer_hash, &event->ev_flow_id);
     if(!inner_map) {
         bpf_printk("initialize_timer: Couldn't find outer map entry");
         return -1;
@@ -702,14 +761,17 @@ static __always_inline int initialize_timer(struct timer_event event, struct flo
 
 static __always_inline void example_ep(struct net_event *event, struct context *ctx,
     struct intermediate_output *inter_output) {
-
+        
     struct prog_event new_prog_ev;
-    
     struct timer_event new_event;
     new_event.ev_flow_id = event->ev_flow_id;
     new_event.event_type = MISS_ACK;
     new_event.value = 0;
-    initialize_timer(new_event, new_event.ev_flow_id, TEN_SEC, EP_TIMER_TEST);
+    initialize_timer(new_event, TEN_SEC, EP_TIMER_TEST);
+    if(1 == 0) {
+        restart_timer(new_event.ev_flow_id, ONE_SEC, EP_TIMER_TEST);
+        cancel_timer(new_event.ev_flow_id, EP_TIMER_TEST);
+    }
 
     for(int i = 0; i < 2; i++) {
         new_prog_ev.ev_flow_id = event->ev_flow_id;
@@ -769,7 +831,7 @@ static __always_inline void * scheduler(struct sched_loop_args * arg, __u8 * is_
 
     int returned_type = next_event(f_info);
     if(returned_type == -1)
-        return 0;
+        return NULL;
 
     void * ev;
 
@@ -865,7 +927,7 @@ static __always_inline int net_ev_process(struct xdp_md *ctx, struct flow_id * f
 SEC("xdp")
 int net_arrive(struct xdp_md *ctx)
 {
-    __u64 arrival_time = bpf_ktime_get_ns();
+    //__u64 arrival_time = bpf_ktime_get_ns();
 
     struct sched_loop_args arg;
     arg.ctx = NULL;
@@ -889,20 +951,19 @@ int net_arrive(struct xdp_md *ctx)
      * has an active AF_XDP socket bound to it. */
     int rx_queue_index = ctx->rx_queue_index;
     if (bpf_map_lookup_elem(&xsks_map, &rx_queue_index)) {
-        __u64 finish_time = bpf_ktime_get_ns();
+        /*__u64 finish_time = bpf_ktime_get_ns();
         int cpu = bpf_get_smp_processor_id();
         struct info *value = bpf_map_lookup_elem(&info_array, &cpu);
         if(!value)
             return XDP_DROP;
         value->counter += 1;
-        value->latency += (finish_time - arrival_time);
+        value->latency += (finish_time - arrival_time);*/
         //bpf_printk("TEST %d %d", cpu, rx_queue_index);
         return bpf_redirect_map(&xsks_map, rx_queue_index, 0);
     }
 
     return XDP_DROP;
 }
-// TODO: compare before and after doing the simplifications
 
 char _license[] SEC("license") = "GPL";
 
