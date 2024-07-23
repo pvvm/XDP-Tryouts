@@ -850,7 +850,7 @@ static __always_inline void app_event_processor(struct app_event *event, struct 
     new_event.ev_flow_id = event->ev_flow_id;
     new_event.event_type = MISS_ACK;
     new_event.seq_num = ctx->window_start_seq;
-    initialize_timer(new_event, new_event.ev_flow_id, TEN_SEC, EP_TIMER_TEST);
+    initialize_timer(new_event, TEN_SEC, EP_TIMER_TEST);
 }
 
 static long update_window(__u32 index, struct flow_id *fid) {
@@ -882,6 +882,7 @@ static __always_inline void net_event_processor(struct net_event *event, struct 
     int data_rest = ctx->data_size - (ctx->last_seq_sent + 1);
     if(data_rest == 0 && event->ack_seq == ctx->last_seq_sent + 1) {
         bpf_printk("All packets sent and received");
+        cancel_timer(event->ev_flow_id, EP_TIMER_TEST);
         return;
     }
     int num_to_send = event->ack_seq - ctx->window_start_seq;
@@ -889,6 +890,7 @@ static __always_inline void net_event_processor(struct net_event *event, struct 
     bpf_map_update_elem(&context_hash, &event->ev_flow_id, ctx, BPF_ANY);
     bpf_loop(num_to_send, update_window, &event->ev_flow_id, 0);
     //Placeholder for reset timer
+    restart_timer(event->ev_flow_id, TEN_SEC, EP_TIMER_TEST);
 }
 
 static __always_inline void timer_event_processor(struct timer_event *event, struct context *ctx,
