@@ -63,7 +63,7 @@ struct prog_event {
     enum minor_event_type event_type;
     struct flow_id ev_flow_id;
     __u64 value;
-    __u64 value1;
+   /*__u64 value1;
     __u64 value2;
     __u64 value3;
     __u64 value4;
@@ -79,7 +79,7 @@ struct prog_event {
     __u64 value14;
     __u64 value15;
     __u64 value16;
-    /*__u64 value17;
+    __u64 value17;
     __u64 value18;
     __u64 value19;
     __u64 value20;
@@ -140,7 +140,7 @@ struct queue_head_tail {
     __u32 prog_tail;
 };
 
-struct flow_info {
+struct queue_flow_info {
     struct app_info {
         __u32 app_head;
         __u32 app_tail;
@@ -178,7 +178,7 @@ struct intermediate_output {
 };
 
 struct sched_loop_args {
-    struct flow_info *f_info;
+    struct queue_flow_info *f_info;
     struct flow_id f_id;
     struct context *ctx;
 };

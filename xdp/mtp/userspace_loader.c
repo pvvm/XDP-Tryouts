@@ -180,7 +180,7 @@ static struct xsk_umem_info *configure_xsk_umem(void *buffer, uint64_t size)
 		.flags = 0
 	};*/
 
-	/* Sets a UMEM by taking the buffer, its size, and the fill and completion queues */
+	/* Allocates a UMEM by taking the buffer, its size, and the fill and completion queues */
 	ret = xsk_umem__create(&umem->umem, buffer, size, &umem->fq, &umem->cq,
 			       NULL/*&xsk_umem_cfg*/);
 	if (ret) {
@@ -241,9 +241,8 @@ static struct xsk_socket_info *xsk_configure_socket(struct config *cfg,
 	//cfg->xsk_bind_flags |= XDP_COPY;
 	xsk_cfg.bind_flags = cfg->xsk_bind_flags;
 	xsk_cfg.libbpf_flags = (custom_xsk) ? XSK_LIBBPF_FLAGS__INHIBIT_PROG_LOAD: 0;
-	/* Creates socket, storing its address in xsk_info->xsk */
 
-	//printf("\n\nQueue id %d\n\n", cfg->xsk_if_queue);
+	/* Creates socket, storing its address in xsk_info->xsk */
 	ret = xsk_socket__create(&xsk_info->xsk, cfg->ifname,
 				 cfg->xsk_if_queue, umem->umem, &xsk_info->rx,
 				 &xsk_info->tx, &xsk_cfg);
@@ -261,7 +260,7 @@ static struct xsk_socket_info *xsk_configure_socket(struct config *cfg,
 			goto error_exit;
 	}
 
-	/* Initialize umem frame allocation */
+	/* Stores the addresses of UMEM frame into an array */
 	for (i = 0; i < NUM_FRAMES; i++)
 		xsk_info->umem_frame_addr[i] = i * FRAME_SIZE;
 
@@ -276,13 +275,15 @@ static struct xsk_socket_info *xsk_configure_socket(struct config *cfg,
 	if (ret != XSK_RING_PROD__DEFAULT_NUM_DESCS)
 		goto error_exit;
 
-	/* For each one of the reserved spaces, we allocate a UMEM frame */
+	/* Gets the free UMEM frames adresses and sets them in the fill ring */
 	for (i = 0; i < XSK_RING_PROD__DEFAULT_NUM_DESCS; i++)
 		*xsk_ring_prod__fill_addr(&xsk_info->umem->fq, idx++) =
 			xsk_alloc_umem_frame(xsk_info);
 
 	/* After the frames are properly reserved and allocated, the application
 	 * submits them, which indicates to the kernel they are ready to be used
+	 i.e. from the head until head + XSK_RING_PROD__DEFAULT_NUM_DESCS, these
+	 frames are available for the kernel to use
 	 */
 	xsk_ring_prod__submit(&xsk_info->umem->fq,
 			      XSK_RING_PROD__DEFAULT_NUM_DESCS);
@@ -308,12 +309,16 @@ static void complete_tx(struct xsk_socket_info *xsk)
 	completed = xsk_ring_cons__peek(&xsk->umem->cq,
 					XSK_RING_CONS__DEFAULT_NUM_DESCS,
 					&idx_cq);
+	printf("Completed %d\n", completed);
 
 	if (completed > 0) {
-		for (int i = 0; i < completed; i++)
+		for (int i = 0; i < completed; i++) {
+			const __u64 * teste = xsk_ring_cons__comp_addr(&xsk->umem->cq,
+								      idx_cq++);
+			printf("Completion address: %llu\n", *teste);
 			xsk_free_umem_frame(xsk,
-					    *xsk_ring_cons__comp_addr(&xsk->umem->cq,
-								      idx_cq++));
+					    *teste);
+		}
 
 		xsk_ring_cons__release(&xsk->umem->cq, completed);
 		xsk->outstanding_tx -= completed < xsk->outstanding_tx ?
@@ -419,17 +424,17 @@ static void handle_receive_packets(struct xsk_socket_info *xsk)
 	if (!rcvd)
 		return;
 
-	//printf("TEST\n");
-
-	/* Stuff the ring with as much frames as possible */
+	/* Stuff the ring with as many frames as possible */
 	/* Gets the number of available entries in fill ring*/
 	stock_frames = xsk_prod_nb_free(&xsk->umem->fq,
 					xsk_umem_free_frames(xsk));
+	//printf("TEST %d %d %d %ld\n", stock_frames, rcvd, idx_rx, xsk_umem_free_frames(xsk));
 
 	if (stock_frames > 0) {
 		/* Reserves a number of entries in fill ring */
 		ret = xsk_ring_prod__reserve(&xsk->umem->fq, stock_frames,
 					     &idx_fq);
+		//printf("idx_fq: %d\n", idx_fq);
 
 		/* This should not happen, but just in case */
 		while (ret != stock_frames)
@@ -439,9 +444,12 @@ static void handle_receive_packets(struct xsk_socket_info *xsk)
 		/* For each one of the reserved entries of fill ring
 		 * we allocate a UMEM frame and sets its address to fill ring
 		 */
-		for (i = 0; i < stock_frames; i++)
+		for (i = 0; i < stock_frames; i++) {
+			__u64 teste = xsk_alloc_umem_frame(xsk);
+			printf("Frame address: %llu\n", teste);
 			*xsk_ring_prod__fill_addr(&xsk->umem->fq, idx_fq++) =
-				xsk_alloc_umem_frame(xsk);
+				teste;
+		}
 
 		/* After everything has been written to fill ring,
 		 * indicates to the kernel that the application can submit
@@ -455,6 +463,7 @@ static void handle_receive_packets(struct xsk_socket_info *xsk)
 		/* Gets information about an entry of the RX ring */
 		uint64_t addr = xsk_ring_cons__rx_desc(&xsk->rx, idx_rx)->addr;
 		uint32_t len = xsk_ring_cons__rx_desc(&xsk->rx, idx_rx++)->len;
+		printf("RX ADDRESS: %ld\n", addr);
 
 		if (!process_packet(xsk, addr, len))
 			xsk_free_umem_frame(xsk, addr);

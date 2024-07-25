@@ -133,25 +133,12 @@ struct outer_prog_hash {
 
 /*--------------- FLOW INFO MAPS ---------------*/
 
-struct inner_flow_info_hash{
+struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, struct flow_id);
-    __type(value, struct flow_info);
+    __type(value, struct queue_flow_info);
     __uint(max_entries, MAX_NUMBER_FLOWS);
-} inner_flow_info_hash0 SEC(".maps"), inner_flow_info_hash1 SEC(".maps"),inner_flow_info_hash2 SEC(".maps"),
-inner_flow_info_hash3 SEC(".maps"), inner_flow_info_hash4 SEC(".maps"),inner_flow_info_hash5 SEC(".maps"),
-inner_flow_info_hash6 SEC(".maps"), inner_flow_info_hash7 SEC(".maps");
-
-struct outer_flow_info_array {
-    __uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
-    __uint(max_entries, MAX_NUMBER_CORES);
-    __type(key, __u32);
-    __array(values, struct inner_flow_info_hash);
-} outer_flow_info_array SEC(".maps") = {
-    .values = {&inner_flow_info_hash0, &inner_flow_info_hash1, &inner_flow_info_hash2,
-    &inner_flow_info_hash3, &inner_flow_info_hash4, &inner_flow_info_hash5,
-    &inner_flow_info_hash6, &inner_flow_info_hash7}
-};
+} queue_flow_info_hash SEC(".maps");
 
 /*--------------- TIMER TRIGGER MAP ---------------*/
 
@@ -353,21 +340,15 @@ static __always_inline void update_app_len(struct app_info *app_info, struct flo
 }
 
 
-static __always_inline struct flow_info * find_flow_info(struct flow_id ev_flow_id) {
-    int cpu_id = bpf_get_smp_processor_id();
+static __always_inline struct queue_flow_info * find_queue_flow_info(struct flow_id ev_flow_id) {
 
-    struct inner_flow_info_hash *flow_info_hash = bpf_map_lookup_elem(&outer_flow_info_array, &cpu_id);
-    if(!flow_info_hash) {
-        bpf_printk("find_flow_info: Couldn't get entry from flow info outer map");
-        return NULL;
-    }
-    struct flow_info *f_info = bpf_map_lookup_elem(flow_info_hash, &ev_flow_id);
+    struct queue_flow_info *f_info = bpf_map_lookup_elem(&queue_flow_info_hash, &ev_flow_id);
     if(!f_info) {
-        struct flow_info new_f_info = {{0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0}};
-        bpf_map_update_elem(flow_info_hash, &ev_flow_id, &new_f_info, BPF_NOEXIST);
-        f_info = bpf_map_lookup_elem(flow_info_hash, &ev_flow_id);
+        struct queue_flow_info new_f_info = {{0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0}};
+        bpf_map_update_elem(&queue_flow_info_hash, &ev_flow_id, &new_f_info, BPF_NOEXIST);
+        f_info = bpf_map_lookup_elem(&queue_flow_info_hash, &ev_flow_id);
         if(!f_info) {
-            bpf_printk("find_flow_info: Couldn't get entry from flow info inner map");
+            bpf_printk("find_queue_flow_info: Couldn't get entry from flow info inner map");
             return NULL;
         }
         return f_info;
@@ -413,7 +394,7 @@ static __always_inline void generic_event_enqueue(void * event, enum major_event
     {
         bpf_printk("PROG_EVENT");
         struct prog_event enq_event = *(struct prog_event *) event;
-        struct flow_info *f_info = find_flow_info(enq_event.ev_flow_id);
+        struct queue_flow_info *f_info = find_queue_flow_info(enq_event.ev_flow_id);
         if(!f_info)
             return;
         if(!try_to_enqueue(&outer_prog_hash, event, enq_event.ev_flow_id, &(f_info->prog_info.len_prog_queue),
@@ -428,7 +409,7 @@ static __always_inline void generic_event_enqueue(void * event, enum major_event
     }
 }
 
-/*static __u64 loop_hash_info(struct bpf_map *map, struct flow_id *key, struct flow_info *val, struct flow_loop_data *data) {
+/*static __u64 loop_hash_info(struct bpf_map *map, struct flow_id *key, struct queue_flow_info *val, struct flow_loop_data *data) {
     __u32 current_max = data->len_app_queue + data->len_net_queue + data->len_timer_queue + data->len_prog_queue;
 
     __u32 current_sum = val->app_info.len_app_queue + val->net_info.len_net_queue +
@@ -445,7 +426,6 @@ static __always_inline void generic_event_enqueue(void * event, enum major_event
     return 0;
 }
 
-// TODO: process only the events with the same flow of the arriving packet
 static __always_inline int next_flow(struct flow_id *flow, int cpu_id) {
     struct inner_flow_info_hash *flow_info_hash = bpf_map_lookup_elem(&outer_flow_info_array, &cpu_id);
     if(!flow_info_hash) {
@@ -466,7 +446,7 @@ static __always_inline int next_flow(struct flow_id *flow, int cpu_id) {
     return 1;
 }*/
 
-static __always_inline int next_event(struct flow_info * f_info) {
+static __always_inline int next_event(struct queue_flow_info * f_info) {
     // App, net, timer, prog. App has the lowest priority, timer has the highest
     __u32 type_priorities[3] = {1, 3, 2};
     type_priorities[0] *= f_info->app_info.len_app_queue;
@@ -570,7 +550,7 @@ static __always_inline int timer_event_enqueue(void *map, struct flow_id *flow, 
     event.valid_bit = 1;
 
     bpf_printk("TIMER_EVENT");
-    struct flow_info *f_info = find_flow_info(event.ev_flow_id);
+    struct queue_flow_info *f_info = find_queue_flow_info(event.ev_flow_id);
     if(!f_info)
         return 0;
     __u64 * executing = &f_info->timer_info.executing_enqueue;
@@ -587,8 +567,6 @@ static __always_inline int timer_event_enqueue(void *map, struct flow_id *flow, 
     // Set executing bit to 1
     __sync_fetch_and_xor(executing, 1);
 
-    // Question: do we even need this check? For other event types the events are dropped,
-    // so I'm doing the same here
     if(__sync_fetch_and_or(queue_len, 0) == MAX_EVENT_QUEUE_LEN - 1) {
         bpf_printk("try_to_enqueue_timer: queue is full, unable to enqueue event");
         __sync_fetch_and_xor(executing, 1);
@@ -826,7 +804,7 @@ static __always_inline void dispatcher(void * event, enum minor_event_type type,
 
 static __always_inline void * scheduler(struct sched_loop_args * arg, __u8 * is_app_event,
     __u32 *minor_type) {
-    struct flow_info *f_info = arg->f_info;
+    struct queue_flow_info *f_info = arg->f_info;
     struct flow_id f_id = arg->f_id;
 
     int returned_type = next_event(f_info);
@@ -935,7 +913,7 @@ int net_arrive(struct xdp_md *ctx)
     // Process network event first
     if(!net_ev_process(ctx, &arg.f_id, &arg.ctx))
         return XDP_DROP;
-    arg.f_info = find_flow_info(arg.f_id);
+    arg.f_info = find_queue_flow_info(arg.f_id);
     if(!arg.f_info)
         return XDP_DROP;
 
