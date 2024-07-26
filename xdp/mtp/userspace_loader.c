@@ -312,7 +312,7 @@ static void complete_tx(struct xsk_socket_info *xsk)
 	completed = xsk_ring_cons__peek(&xsk->umem->cq,
 					XSK_RING_CONS__DEFAULT_NUM_DESCS,
 					&idx_cq);
-	//printf("Completed %d\n", completed);
+	printf("CPU: %d Completed %d\n", sched_getcpu(), completed);
 
 	if (completed > 0) {
 		for (int i = 0; i < completed; i++) {
@@ -354,21 +354,15 @@ static bool process_packet(struct xsk_socket_info *xsk,
 
 	if (pkt) {
 		int ret;
+		int num_pkts_send = 3;
 		uint32_t tx_idx = 0;
 		uint8_t tmp_mac[ETH_ALEN];
 		struct in6_addr tmp_ip;
 		struct ethhdr *eth = (struct ethhdr *) pkt;
 		struct iphdr *ip = (struct iphdr *) (eth + 1);
-		//struct icmphdr *icmp = (struct icmphdr *) (ip + 1);
 		struct tcphdr *tcp = (struct tcphdr *) (ip + 1);
 
-		printf("Destination port: %d\n", ntohs(tcp->dest));
-
-		/*if (ntohs(eth->h_proto) != ETH_P_IPV6 ||
-		    len < (sizeof(*eth) + sizeof(*ip) + sizeof(*icmp)) ||
-		    ip->protocol != IPPROTO_ICMP ||
-		    icmp->type != ICMP_ECHO)
-			return false;*/
+		//printf("Destination port: %d\n", ntohs(tcp->dest));
 
 		if (ntohs(eth->h_proto) != ETH_P_IP ||
 		    len < (sizeof(*eth) + sizeof(*ip) + sizeof(*tcp)) ||
@@ -383,30 +377,46 @@ static bool process_packet(struct xsk_socket_info *xsk,
 		memcpy(&ip->saddr, &ip->daddr, sizeof(tmp_ip));
 		memcpy(&ip->daddr, &tmp_ip, sizeof(tmp_ip));
 
-		/*icmp->type = ICMP_ECHOREPLY;
-
-		csum_replace2(&icmp->checksum,
-			      htons(ICMP_ECHO << 8),
-			      htons(ICMP_ECHOREPLY << 8));*/
-		
-
-		/* Here we sent the packet out of the receive port. Note that
-		 * we allocate one entry and schedule it. Your design would be
-		 * faster if you do batch processing/transmission */
-
-		ret = xsk_ring_prod__reserve(&xsk->tx, 1, &tx_idx);
-		if (ret != 1) {
+		/* 	First we check whether we have enough space to allocate
+			all required frames, and we get a pointer to the frames
+			if no problems happen
+		*/
+		__u64 frame_address[num_pkts_send];
+		uint8_t *area_mem[num_pkts_send];
+		for(int i = 0; i < num_pkts_send; i++) {
+			frame_address[i] = xsk_alloc_umem_frame(xsk);
+			area_mem[i] = xsk_umem__get_data(xsk->umem->buffer, frame_address[i]);
+			if(!area_mem[i]) {
+				for(int j = 0; j <= i; j++)
+					xsk_free_umem_frame(xsk, frame_address[j]);
+				return false;
+			}
+		}
+	
+		ret = xsk_ring_prod__reserve(&xsk->tx, num_pkts_send, &tx_idx);
+		if (!ret) {
 			/* No more transmit slots, drop the packet */
 			return false;
 		}
 
-		xsk_ring_prod__tx_desc(&xsk->tx, tx_idx)->addr = addr;
-		xsk_ring_prod__tx_desc(&xsk->tx, tx_idx)->len = len;
-		xsk_ring_prod__submit(&xsk->tx, 1);
-		xsk->outstanding_tx++;
+		for(int i = 0; i < num_pkts_send; i++) {
+			unsigned char pkt[1500];
+			size_t data_len = 0;
+			create_packet(pkt, &data_len);
 
-		xsk->stats.tx_bytes += len;
-		xsk->stats.tx_packets++;
+			memcpy(area_mem[i], pkt, data_len);
+
+			xsk_ring_prod__tx_desc(&xsk->tx, tx_idx)->addr = frame_address[i];
+			xsk_ring_prod__tx_desc(&xsk->tx, tx_idx++)->len = data_len;
+
+			xsk->outstanding_tx++;
+			xsk->stats.tx_bytes += data_len;
+			xsk->stats.tx_packets++;
+
+			packets_per_core[sched_getcpu()] += 1;
+		}
+
+		xsk_ring_prod__submit(&xsk->tx, num_pkts_send);
 		return true;
 	}
 
@@ -449,7 +459,7 @@ static void handle_receive_packets(struct xsk_socket_info *xsk)
 		 */
 		for (i = 0; i < stock_frames; i++) {
 			__u64 teste = xsk_alloc_umem_frame(xsk);
-			printf("Frame address: %llu\n", teste);
+			//printf("Frame address: %llu\n", teste);
 			*xsk_ring_prod__fill_addr(&xsk->umem->fq, idx_fq++) =
 				teste;
 		}
@@ -466,7 +476,7 @@ static void handle_receive_packets(struct xsk_socket_info *xsk)
 		/* Gets information about an entry of the RX ring */
 		uint64_t addr = xsk_ring_cons__rx_desc(&xsk->rx, idx_rx)->addr;
 		uint32_t len = xsk_ring_cons__rx_desc(&xsk->rx, idx_rx++)->len;
-		printf("RX ADDRESS: %ld\n", addr);
+		//printf("RX ADDRESS: %ld\n", addr);
 
 		if (!process_packet(xsk, addr, len))
 			xsk_free_umem_frame(xsk, addr);
@@ -490,29 +500,32 @@ static void send_packet_directly(struct xsk_socket_info *xsk) {
 
 	uint32_t tx_idx = 0;
 
+	__u64 frame_address = xsk_alloc_umem_frame(xsk);
+	//printf("CPU: %d, Address: %llu\n", sched_getcpu(), frame_address);
+	uint8_t *area_mem = xsk_umem__get_data(xsk->umem->buffer, frame_address);
+	if(!area_mem) {
+		xsk_free_umem_frame(xsk, frame_address);
+		return;
+	}
+
 	int ret = xsk_ring_prod__reserve(&xsk->tx, 1, &tx_idx);
 	if (ret != 1) {
 		/* No more transmit slots, drop the packet */
 		return;
 	}
-	__u64 frame_address = xsk_alloc_umem_frame(xsk);
-	//printf("CPU: %d, Address: %llu\n", sched_getcpu(), frame_address);
-	uint8_t *area_mem = xsk_umem__get_data(xsk->umem->buffer, frame_address);
-	if(area_mem) {
-		memcpy(area_mem, pkt, data_len);
-		xsk_ring_prod__tx_desc(&xsk->tx, tx_idx)->addr = frame_address;
-		xsk_ring_prod__tx_desc(&xsk->tx, tx_idx)->len = data_len;
-		xsk_ring_prod__submit(&xsk->tx, 1);
 
-		xsk->outstanding_tx++;
-		xsk->stats.tx_bytes += data_len;
-		xsk->stats.tx_packets++;
+	memcpy(area_mem, pkt, data_len);
+	xsk_ring_prod__tx_desc(&xsk->tx, tx_idx)->addr = frame_address;
+	xsk_ring_prod__tx_desc(&xsk->tx, tx_idx)->len = data_len;
+	xsk_ring_prod__submit(&xsk->tx, 1);
 
-		complete_tx(xsk);
-		packets_per_core[sched_getcpu()] += 1;
-	} else {
-		xsk_free_umem_frame(xsk, frame_address);
-	}
+	xsk->outstanding_tx++;
+	xsk->stats.tx_bytes += data_len;
+	xsk->stats.tx_packets++;
+
+	complete_tx(xsk);
+	packets_per_core[sched_getcpu()] += 1;
+	
 }
 
 void produce_app_events(int cpu_id, int outer_map_fd, int tail_map_fd, int *inner_index, atomic_uint * last_head) {
@@ -652,6 +665,7 @@ void * producer_and_afxdp(void *arg) {
 		handle_receive_packets(xsk_socket);
 
 		send_packet_directly(xsk_socket);
+		sleep(1);
 	}
 	free(info);
 	pthread_exit(NULL);
