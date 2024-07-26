@@ -36,6 +36,7 @@
 
 #include "common_def.h"
 #include "req_queue.h"
+#include "create_packet.h"
 
 #define NUM_FRAMES         	4096
 #define FRAME_SIZE         	XSK_UMEM__DEFAULT_FRAME_SIZE
@@ -45,6 +46,8 @@
 static const char *default_filename = "kernel_xdp.o";
 
 static const char *default_progname = "net_arrive";
+
+int packets_per_core[8] = {0, 0, 0, 0, 0, 0, 0, 0};
 
 static struct xdp_program *prog;
 int xsk_map_fd;
@@ -309,13 +312,13 @@ static void complete_tx(struct xsk_socket_info *xsk)
 	completed = xsk_ring_cons__peek(&xsk->umem->cq,
 					XSK_RING_CONS__DEFAULT_NUM_DESCS,
 					&idx_cq);
-	printf("Completed %d\n", completed);
+	//printf("Completed %d\n", completed);
 
 	if (completed > 0) {
 		for (int i = 0; i < completed; i++) {
 			const __u64 * teste = xsk_ring_cons__comp_addr(&xsk->umem->cq,
 								      idx_cq++);
-			printf("Completion address: %llu\n", *teste);
+			//printf("Completion address: %llu\n", *teste);
 			xsk_free_umem_frame(xsk,
 					    *teste);
 		}
@@ -478,6 +481,40 @@ static void handle_receive_packets(struct xsk_socket_info *xsk)
 	complete_tx(xsk);
 }
 
+static void send_packet_directly(struct xsk_socket_info *xsk) {
+	unsigned char pkt[1500];
+    size_t data_len = 0;
+    
+    create_packet(pkt, &data_len);
+	//printf("\n%lu", data_len);
+
+	uint32_t tx_idx = 0;
+
+	int ret = xsk_ring_prod__reserve(&xsk->tx, 1, &tx_idx);
+	if (ret != 1) {
+		/* No more transmit slots, drop the packet */
+		return;
+	}
+	__u64 frame_address = xsk_alloc_umem_frame(xsk);
+	//printf("CPU: %d, Address: %llu\n", sched_getcpu(), frame_address);
+	uint8_t *area_mem = xsk_umem__get_data(xsk->umem->buffer, frame_address);
+	if(area_mem) {
+		memcpy(area_mem, pkt, data_len);
+		xsk_ring_prod__tx_desc(&xsk->tx, tx_idx)->addr = frame_address;
+		xsk_ring_prod__tx_desc(&xsk->tx, tx_idx)->len = data_len;
+		xsk_ring_prod__submit(&xsk->tx, 1);
+
+		xsk->outstanding_tx++;
+		xsk->stats.tx_bytes += data_len;
+		xsk->stats.tx_packets++;
+
+		complete_tx(xsk);
+		packets_per_core[sched_getcpu()] += 1;
+	} else {
+		xsk_free_umem_frame(xsk, frame_address);
+	}
+}
+
 void produce_app_events(int cpu_id, int outer_map_fd, int tail_map_fd, int *inner_index, atomic_uint * last_head) {
 	int inner_id, inner_fd, err;
 	
@@ -613,6 +650,8 @@ void * producer_and_afxdp(void *arg) {
 				continue;
 		}
 		handle_receive_packets(xsk_socket);
+
+		send_packet_directly(xsk_socket);
 	}
 	free(info);
 	pthread_exit(NULL);
@@ -737,6 +776,12 @@ static void exit_application(int signal)
 
 	signal = signal;
 	global_exit = true;
+
+	int pkt_sum = 0;
+	for(int i = 0; i < 8; i++) {
+		pkt_sum += packets_per_core[i];
+	}
+	printf("Total num packets sent: %d\n", pkt_sum);
 }
 
 int main(int argc, char **argv)
