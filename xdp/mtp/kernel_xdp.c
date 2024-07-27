@@ -842,10 +842,25 @@ static long app_event_send(__u32 index, struct flow_id *fid) {
 
 static __always_inline void app_event_processor(struct app_event *event, struct context *ctx,
     struct intermediate_output *inter_output) {
-    // Update window:
-    int num_to_send = WINDOW_SIZE - ctx->cur_size;
     struct flow_id fid = event->ev_flow_id;
+    // Update size of data to send
+    ctx->data_size += event->data_size;
+    bpf_printk("data_size: %u", ctx->data_size);
+    bpf_map_update_elem(&context_hash, &fid, ctx, BPF_ANY);
+    // Update window:
+    int data_rest = ctx->data_size - (ctx->last_seq_sent + 1);
+    int window_empty_spots = WINDOW_SIZE - ctx->cur_size;
+    int num_to_send = data_rest < window_empty_spots ? data_rest : window_empty_spots;
     bpf_loop(num_to_send, app_event_send, &fid, 0);
+
+    // Need this to make ther last update valid: Why?
+    struct context *tcp_ctx = bpf_map_lookup_elem(&context_hash, &fid);
+    if(!tcp_ctx) {
+        bpf_printk("tcp_ctx does not exist with the fid\n");
+        return;
+    }
+    bpf_map_update_elem(&context_hash, &fid, tcp_ctx, BPF_ANY);
+
     // Create timer event and start timer:
     struct timer_event new_event;
     new_event.ev_flow_id = event->ev_flow_id;
@@ -884,7 +899,6 @@ static __always_inline void net_event_processor(struct net_event *event, struct 
     if(data_rest == 0 && event->ack_seq == ctx->last_seq_sent + 1) {
         bpf_printk("All packets sent and received");
         cancel_timer(event->ev_flow_id, EP_TIMER_TEST);
-        return;
     }
     int num_to_send = event->ack_seq - ctx->window_start_seq;
     ctx->window_start_seq = event->ack_seq;

@@ -700,7 +700,7 @@ void distribute_requests() {
 	//cpu_req_queues = create_queue();
 	init_queue_v2(cpu_req_queues_v2);
 	//Update app_event, the last num is the size of the sent packet
-	struct app_event event = {SEND, {0, 0, 0, 0}, 1, 0};
+	struct app_event event = {SEND, {0, 0, 0, 0}, 1, 5};
 	int cpu_to_send = 0;
 	while(1) {
 		//Type 0 to send packet to CPU 0
