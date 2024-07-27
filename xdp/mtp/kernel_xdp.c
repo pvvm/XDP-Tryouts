@@ -711,10 +711,10 @@ static __always_inline int restart_timer(struct flow_id flow, __u64 time,
         return -1;
     }
 
-    if(!map_entry->triggered) {
-        bpf_printk("restart_timer: timer isn't currently triggered");
-        return -1;
-    }
+    // if(!map_entry->triggered) {
+    //     bpf_printk("restart_timer: timer isn't currently triggered");
+    //     return -1;
+    // }
 
     if(bpf_timer_start(&(map_entry->timer), time, 0) != 0) {
         bpf_printk("restart_timer: couldn't restart timer");
@@ -906,20 +906,32 @@ static __always_inline void net_event_processor(struct net_event *event, struct 
     struct flow_id fid = event->ev_flow_id;
     bpf_loop(num_to_send, update_window, &fid, 0);
     //Placeholder for reset timer
+    enum timer_instances index = EP_TIMER_TEST;
+    struct flow_id key = {0, 0, 0, 0};
+    struct timer_trigger_inner_array * inner_map = bpf_map_lookup_elem(&timer_trigger_outer_hash, &key);
+    if(!inner_map) {
+        bpf_printk("restart_timer: Couldn't find outer map entry");
+        return;
+    }
+    struct timer_trigger *map_entry = bpf_map_lookup_elem(inner_map, &index);
+    if(!map_entry) {
+        bpf_printk("restart_timer: Couldn't find inner map entry");
+        return;
+    }
+    map_entry->t_event.seq_num = event->ack_seq;
     restart_timer(event->ev_flow_id, TEN_SEC, EP_TIMER_TEST);
 }
 
 static __always_inline void timer_event_processor(struct timer_event *event, struct context *ctx,
     struct intermediate_output *inter_output) {
-    bpf_printk("Timer event procesor triggered");
     // Resend packet
-    bpf_printk("window_start: %d, event seq: %d",ctx->window_start_seq, event->seq_num);
     if(ctx->window_start_seq == event->seq_num) {
         struct packet_event *pe = bpf_map_lookup_elem(&window_packets, &ctx->head);
         if(!pe) {
             bpf_printk("Resent packet not found");
             return;
         }
+        bpf_printk("Resend packet:");
         send_packet(pe);
     }
 }
