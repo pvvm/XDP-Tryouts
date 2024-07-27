@@ -933,6 +933,7 @@ static __always_inline void timer_event_processor(struct timer_event *event, str
         }
         bpf_printk("Resend packet:");
         send_packet(pe);
+        restart_timer(event->ev_flow_id, TEN_SEC, EP_TIMER_TEST);
     }
 }
 
