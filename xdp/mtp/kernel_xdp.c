@@ -911,7 +911,9 @@ static __always_inline void net_event_processor(struct net_event *event, struct 
 
 static __always_inline void timer_event_processor(struct timer_event *event, struct context *ctx,
     struct intermediate_output *inter_output) {
+    bpf_printk("Timer event procesor triggered");
     // Resend packet
+    bpf_printk("window_start: %d, event seq: %d",ctx->window_start_seq, event->seq_num);
     if(ctx->window_start_seq == event->seq_num) {
         struct packet_event *pe = bpf_map_lookup_elem(&window_packets, &ctx->head);
         if(!pe) {
