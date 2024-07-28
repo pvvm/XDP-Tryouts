@@ -51,7 +51,7 @@ struct metadata_hdr {
 
 struct sched_loop_args {
     struct flow_id f_id;
-    __u32 curr_pkt_len;
+    //__u32 curr_pkt_len;
     struct xdp_md *redirect_pkt;
 };
 

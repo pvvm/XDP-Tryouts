@@ -577,6 +577,7 @@ void * producer_and_afxdp(void *arg) {
 		}
 		handle_receive_packets(xsk_socket);
 
+		if(0)
 		send_packet_directly(xsk_socket);
 		sleep(1);
 	}

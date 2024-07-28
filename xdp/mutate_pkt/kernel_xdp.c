@@ -142,8 +142,7 @@ static __always_inline int parse_packet(void *data, void *data_end,
     return 1;
 }
 
-static __always_inline int mutate_pkt(struct xdp_md *ctx, struct net_event *net_ev,
-    __u32 *curr_pkt_len) {
+static __always_inline int mutate_pkt(struct xdp_md *ctx, struct net_event *net_ev) {
 
     void *data_end = (void *)(long)ctx->data_end;
     void *data     = (void *)(long)ctx->data;
@@ -166,7 +165,7 @@ static __always_inline int mutate_pkt(struct xdp_md *ctx, struct net_event *net_
     data     = (void *)(long)ctx->data;
     pkt_len = data_end - data;
 
-    *curr_pkt_len = pkt_len;
+    new_hdr.metadata_end = pkt_len;
 
     if(data + sizeof(new_hdr) > data_end)
         return 0;
@@ -178,7 +177,7 @@ static __always_inline int mutate_pkt(struct xdp_md *ctx, struct net_event *net_
     return 1;
 }
 
-static __always_inline void update_pkt_len(struct xdp_md *redirect_pkt, __u32 curr_pkt_len) {
+/*static __always_inline void update_pkt_len(struct xdp_md *redirect_pkt, __u32 curr_pkt_len) {
     void *data_end = (void *)(long)redirect_pkt->data_end;
     void *data     = (void *)(long)redirect_pkt->data;
     struct metadata_hdr meta_cpy;
@@ -194,60 +193,63 @@ static __always_inline void update_pkt_len(struct xdp_md *redirect_pkt, __u32 cu
         return;
     
     __builtin_memcpy(data, &meta_cpy, sizeof(meta_cpy));
-}
+}*/
 
-static __always_inline void example_ep(struct xdp_md *redirect_pkt, __u32 *curr_pkt_len, 
+static __always_inline void example_ep(struct xdp_md *redirect_pkt,
     int type) {
 
+    if((void *)(long)redirect_pkt->data + sizeof(struct metadata_hdr) > (void *)(long)redirect_pkt->data_end)
+        return;
+    struct metadata_hdr *meta_hdr = (struct metadata_hdr *)(long)redirect_pkt->data;
+
     if(type) {
-        bpf_printk("NET %d", *curr_pkt_len);
+        bpf_printk("NET %d", meta_hdr->metadata_end);
 
         struct net_metadata metadata = {IS_NET_METADATA, 1, 2};
 
-        if(*curr_pkt_len > 4000)
+        if(meta_hdr->metadata_end > 4000)
             return;
 
-        if((void *)(long)redirect_pkt->data + (*curr_pkt_len) + sizeof(metadata) > (void *)(long)redirect_pkt->data_end)
+        if((void *)(long)redirect_pkt->data + (meta_hdr->metadata_end) + sizeof(struct net_metadata) > (void *)(long)redirect_pkt->data_end)
             return;
 
-        __builtin_memcpy((void *)(long)redirect_pkt->data + (*curr_pkt_len), &metadata, sizeof(metadata));
+        __builtin_memcpy((void *)(long)redirect_pkt->data + (meta_hdr->metadata_end), &metadata, sizeof(metadata));
 
-        *curr_pkt_len += sizeof(metadata);
+        meta_hdr->metadata_end += sizeof(metadata);
 
     } else {
-        bpf_printk("APP %d", *curr_pkt_len);
+        bpf_printk("APP %d", meta_hdr->metadata_end);
         struct app_metadata metadata = {IS_APP_METADATA, 6, 7, 8, 9};
 
-        if(*curr_pkt_len > 4000)
+        if(meta_hdr->metadata_end > 4000)
             return;
 
-        if((void *)(long)redirect_pkt->data + (*curr_pkt_len) + sizeof(metadata) > (void *)(long)redirect_pkt->data_end)
+        if((void *)(long)redirect_pkt->data + (meta_hdr->metadata_end) + sizeof(metadata) > (void *)(long)redirect_pkt->data_end)
             return;
 
-        __builtin_memcpy((void *)(long)redirect_pkt->data + (*curr_pkt_len), &metadata, sizeof(metadata));
+        __builtin_memcpy((void *)(long)redirect_pkt->data + (meta_hdr->metadata_end), &metadata, sizeof(metadata));
 
-        *curr_pkt_len += sizeof(metadata);
+        meta_hdr->metadata_end += sizeof(metadata);
     }
 
 }
 
 static long ev_process_loop(__u32 index, struct sched_loop_args * arg) {
-    example_ep(arg->redirect_pkt, &arg->curr_pkt_len, 0);
+    example_ep(arg->redirect_pkt, 0);
 
     return 0;
 }
 
-static __always_inline int net_ev_process(struct xdp_md *redirect_pkt, struct flow_id * f_id,
-    __u32 *curr_pkt_len) {
+static __always_inline int net_ev_process(struct xdp_md *redirect_pkt, struct flow_id * f_id) {
 
     struct net_event net_ev;
 
-    if(!mutate_pkt(redirect_pkt, &net_ev, curr_pkt_len))
+    if(!mutate_pkt(redirect_pkt, &net_ev))
         return 0;
 
     *f_id = net_ev.ev_flow_id;
 
-    example_ep(redirect_pkt, curr_pkt_len, 1);
+    example_ep(redirect_pkt, 1);
 
     return 1;
 }
@@ -260,14 +262,14 @@ int net_arrive(struct xdp_md *ctx)
     struct sched_loop_args arg;
     arg.redirect_pkt = ctx;
     // Process network event first
-    if(!net_ev_process(ctx, &arg.f_id, &arg.curr_pkt_len))
+    if(!net_ev_process(ctx, &arg.f_id))
         return XDP_DROP;
 
     bpf_loop(MAX_NUM_PROCESSED_EVENTS, ev_process_loop, &arg, 0);
 
-    bpf_printk("%d", arg.curr_pkt_len);
+    /*bpf_printk("%d", arg.curr_pkt_len);
 
-    update_pkt_len(ctx, arg.curr_pkt_len);
+    update_pkt_len(ctx, arg.curr_pkt_len);*/
 
     /* An entry here means that the correspnding queue_id
      * has an active AF_XDP socket bound to it. */
