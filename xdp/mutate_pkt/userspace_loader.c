@@ -341,6 +341,60 @@ static inline void csum_replace2(__sum16 *sum, __be16 old, __be16 new)
 	*sum = ~csum16_add(csum16_sub(~(*sum), old), new);
 }
 
+
+static bool submit_multiple_pkts(struct xsk_socket_info *xsk, struct metadata_hdr *meta_hdr,
+	struct net_metadata *array_net_meta[], int num_pkts_send) {
+
+	uint32_t tx_idx = 0;
+
+	/* 	First we check whether we have enough space to allocate
+		all required frames, and we get a pointer to the frames
+		if no problems happen
+	*/
+	__u64 frame_address[num_pkts_send];
+	uint8_t *area_mem[num_pkts_send];
+	for(int i = 0; i < num_pkts_send; i++) {
+		frame_address[i] = xsk_alloc_umem_frame(xsk);
+		area_mem[i] = xsk_umem__get_data(xsk->umem->buffer, frame_address[i]);
+		if(!area_mem[i]) {
+			for(int j = 0; j <= i; j++)
+				xsk_free_umem_frame(xsk, frame_address[j]);
+			return false;
+		}
+	}
+
+	int ret = xsk_ring_prod__reserve(&xsk->tx, num_pkts_send, &tx_idx);
+	if (!ret) {
+		/* No more transmit slots, drop the packet */
+		return false;
+	}
+
+	for(int i = 0; i < num_pkts_send; i++) {
+		struct pkt_info p_info = set_pkt_info(*meta_hdr, *array_net_meta[i]);
+		//printf("New destination port: %d\n", ntohs(p_info.dst_port));
+
+		unsigned char pkt[1500];
+		size_t data_len = 0;
+		create_packet(pkt, &data_len, p_info);
+
+		memcpy(area_mem[i], pkt, data_len);
+
+		xsk_ring_prod__tx_desc(&xsk->tx, tx_idx)->addr = frame_address[i];
+		xsk_ring_prod__tx_desc(&xsk->tx, tx_idx++)->len = data_len;
+
+		xsk->outstanding_tx++;
+		xsk->stats.tx_bytes += data_len;
+		xsk->stats.tx_packets++;
+
+		packets_per_core[sched_getcpu()] += 1;
+	}
+
+	xsk_ring_prod__submit(&xsk->tx, num_pkts_send);
+
+	return true;
+}
+
+
 static bool process_packet(struct xsk_socket_info *xsk,
 			   uint64_t addr, uint32_t len)
 {
@@ -350,90 +404,47 @@ static bool process_packet(struct xsk_socket_info *xsk,
 		struct metadata_hdr *meta_hdr = (struct metadata_hdr *) pkt;
 		unsigned char data[1500];
 
-		int num_pkts_send = 3;
-		uint32_t tx_idx = 0;
 		/*uint8_t tmp_mac[ETH_ALEN];
 		struct in6_addr tmp_ip;*/
 		/*struct ethhdr *eth = (struct ethhdr *) pkt;
 		struct iphdr *ip = (struct iphdr *) (eth + 1);
 		struct tcphdr *tcp = (struct tcphdr *) (ip + 1);*/
 
-		printf("Destination port: %d\n", ntohs(meta_hdr->dst_port));
-		printf("Data length %d\n", meta_hdr->data_len);
+		//printf("Destination port: %d\n", ntohs(meta_hdr->dst_port));
+		//printf("Data length %d\n", meta_hdr->data_len);
 		memcpy(data, pkt + sizeof(struct metadata_hdr), meta_hdr->data_len);
-		printf("%s\n", data);
+		//printf("%s\n", data);
+
+		struct net_metadata *array_net_meta[MAX_NUM_NET_METADATA];
+		int counter_net_meta = 0;
 
 		int curr_start = sizeof(struct metadata_hdr) + meta_hdr->data_len;
 		while(curr_start < meta_hdr->metadata_end) {
 			__u8 *app_or_net = (__u8 *) (pkt + curr_start);
-			printf("%d\n", *app_or_net);
-			if(*app_or_net == 1) {
-				printf("APP ");
+			//printf("%d\n", *app_or_net);
+
+			if(*app_or_net == IS_APP_METADATA) {
+				//printf("APP ");
 				struct app_metadata *app_meta = (struct app_metadata *) (pkt + curr_start);
-				printf("%d %d %d %d %d\n", app_meta->type_metadata, app_meta->value1, app_meta->value2, app_meta->value3, app_meta->value4);
-				curr_start += sizeof(struct app_metadata);
-			} else if (*app_or_net == 0) {
-				printf("NET ");
+				//printf("%d %d %d %d %d\n", app_meta->type_metadata, app_meta->value1, app_meta->value2, app_meta->value3, app_meta->value4);
+				curr_start += sizeof(*app_meta);
+
+			} else if (*app_or_net == IS_NET_METADATA) {
+				//printf("NET ");
 				struct net_metadata *net_meta = (struct net_metadata *) (pkt + curr_start);
-				printf("%d %d %d\n", net_meta->type_metadata, net_meta->value1, net_meta->value2);
-				curr_start += sizeof(struct net_metadata);
+				//printf("%d %d %d\n", net_meta->type_metadata, net_meta->value1, net_meta->value2);
+				curr_start += sizeof(*net_meta);
+
+				array_net_meta[counter_net_meta] = net_meta;
+				counter_net_meta++;
+
 			} else {
 				printf("Invalid metadata\n");
 				return false;
 			}
 		}
 
-		/*memcpy(tmp_mac, meta_hdr->dst_mac, ETH_ALEN);
-		memcpy(meta_hdr->dst_mac, meta_hdr->src_mac, ETH_ALEN);
-		memcpy(meta_hdr->src_mac, tmp_mac, ETH_ALEN);
-
-		memcpy(&tmp_ip, &meta_hdr->dst_ip, sizeof(tmp_ip));
-		memcpy(&meta_hdr->dst_ip, &meta_hdr->src_ip, sizeof(tmp_ip));
-		memcpy(&meta_hdr->src_ip, &tmp_ip, sizeof(tmp_ip));*/
-
-
-
-		/* 	First we check whether we have enough space to allocate
-			all required frames, and we get a pointer to the frames
-			if no problems happen
-		*/
-		__u64 frame_address[num_pkts_send];
-		uint8_t *area_mem[num_pkts_send];
-		for(int i = 0; i < num_pkts_send; i++) {
-			frame_address[i] = xsk_alloc_umem_frame(xsk);
-			area_mem[i] = xsk_umem__get_data(xsk->umem->buffer, frame_address[i]);
-			if(!area_mem[i]) {
-				for(int j = 0; j <= i; j++)
-					xsk_free_umem_frame(xsk, frame_address[j]);
-				return false;
-			}
-		}
-	
-		int ret = xsk_ring_prod__reserve(&xsk->tx, num_pkts_send, &tx_idx);
-		if (!ret) {
-			/* No more transmit slots, drop the packet */
-			return false;
-		}
-
-		for(int i = 0; i < num_pkts_send; i++) {
-			unsigned char pkt[1500];
-			size_t data_len = 0;
-			create_packet(pkt, &data_len);
-
-			memcpy(area_mem[i], pkt, data_len);
-
-			xsk_ring_prod__tx_desc(&xsk->tx, tx_idx)->addr = frame_address[i];
-			xsk_ring_prod__tx_desc(&xsk->tx, tx_idx++)->len = data_len;
-
-			xsk->outstanding_tx++;
-			xsk->stats.tx_bytes += data_len;
-			xsk->stats.tx_packets++;
-
-			packets_per_core[sched_getcpu()] += 1;
-		}
-
-		xsk_ring_prod__submit(&xsk->tx, num_pkts_send);
-		return true;
+		return submit_multiple_pkts(xsk, meta_hdr, array_net_meta, counter_net_meta);
 	}
 
 	return false;
@@ -507,11 +518,12 @@ static void handle_receive_packets(struct xsk_socket_info *xsk)
 	complete_tx(xsk);
 }
 
-/*static void send_packet_directly(struct xsk_socket_info *xsk) {
+static void send_packet_directly(struct xsk_socket_info *xsk) {
 	unsigned char pkt[1500];
     size_t data_len = 0;
     
-    create_packet(pkt, &data_len);
+	struct pkt_info p_info = temporary_default_info();
+    create_packet(pkt, &data_len, p_info);
 	//printf("\n%lu", data_len);
 
 	uint32_t tx_idx = 0;
@@ -541,7 +553,7 @@ static void handle_receive_packets(struct xsk_socket_info *xsk)
 	complete_tx(xsk);
 	packets_per_core[sched_getcpu()] += 1;
 	
-}*/
+}
 
 void * producer_and_afxdp(void *arg) {
 	struct argument *info = (struct argument *) arg;
@@ -565,7 +577,7 @@ void * producer_and_afxdp(void *arg) {
 		}
 		handle_receive_packets(xsk_socket);
 
-		//send_packet_directly(xsk_socket);
+		send_packet_directly(xsk_socket);
 		sleep(1);
 	}
 	free(info);

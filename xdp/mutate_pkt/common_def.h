@@ -8,6 +8,9 @@
 #define MAX_NUMBER_TIMERS 10
 #define NO_TIMER_AVAILABLE 999999
 #define MAX_NUMBER_PROG_EVENTS 10
+#define MAX_NUM_NET_METADATA 20
+#define IS_NET_METADATA 0
+#define IS_APP_METADATA 1
 
 enum major_event_type {
     APP_EVENT,

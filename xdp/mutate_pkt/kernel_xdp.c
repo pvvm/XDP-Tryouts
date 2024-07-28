@@ -202,7 +202,7 @@ static __always_inline void example_ep(struct xdp_md *redirect_pkt, __u32 *curr_
     if(type) {
         bpf_printk("NET %d", *curr_pkt_len);
 
-        struct net_metadata metadata = {0, 1, 2};
+        struct net_metadata metadata = {IS_NET_METADATA, 1, 2};
 
         if(*curr_pkt_len > 4000)
             return;
@@ -216,7 +216,7 @@ static __always_inline void example_ep(struct xdp_md *redirect_pkt, __u32 *curr_
 
     } else {
         bpf_printk("APP %d", *curr_pkt_len);
-        struct app_metadata metadata = {1, 6, 7, 8, 9};
+        struct app_metadata metadata = {IS_APP_METADATA, 6, 7, 8, 9};
 
         if(*curr_pkt_len > 4000)
             return;
