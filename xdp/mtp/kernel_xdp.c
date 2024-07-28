@@ -186,20 +186,9 @@ static __always_inline void define_minor_type(struct net_event *net_ev) {
 }
 
 // TODO: implement the hash map
-static __always_inline int parse_packet(struct xdp_md *ctx, struct net_event *net_ev) {
-    void *data_end = (void *)(long)ctx->data_end;
-    void *data     = (void *)(long)ctx->data;
-
-    /*bpf_xdp_adjust_tail(ctx, 3440);
-
-    data_end = (void *)(long)ctx->data_end;
-    data     = (void *)(long)ctx->data;
-
-    bpf_printk("\n%d %d", data, data_end);
-    bpf_printk("%d\n", data_end - data);*/
-
-    //bpf_printk("\nRX queue index: %u", ctx->rx_queue_index);
-
+static __always_inline int parse_packet(void *data, void *data_end,
+    struct net_event *net_ev, struct metadata_hdr *meta_hdr) {
+    
     struct ethhdr *eth;
     struct iphdr *iphdr;
     struct tcphdr *tcph;
@@ -211,28 +200,13 @@ static __always_inline int parse_packet(struct xdp_md *ctx, struct net_event *ne
 
     eth_type = parse_ethhdr(&nh, data_end, &eth);
     if (eth_type != bpf_htons(ETH_P_IP)) {
-        //bpf_printk("\nDropped at eth. Type: %x\n\n", bpf_ntohs(eth_type));
+        bpf_printk("parse_packet: error while parsing ETH header");
         return 0;
     }
 
-
-    //bpf_printk("\nSource MAC p1: %x:%x:%x",
-    //           eth->h_source[0], eth->h_source[1], eth->h_source[2]);
-    //bpf_printk("\nSource MAC p2: %x:%x:%x",
-    //           eth->h_source[3], eth->h_source[4], eth->h_source[5]);
-
-    //bpf_printk("\nDest MAC p1: %x:%x:%x",
-    //           eth->h_dest[0], eth->h_dest[1], eth->h_dest[2]);
-    //bpf_printk("\nDest MAC p2: %x:%x:%x",
-    //           eth->h_dest[3], eth->h_dest[4], eth->h_dest[5]);
-    //bpf_printk("\nEtherType: %x", bpf_ntohs(eth->h_proto));
-
     ip_type = parse_iphdr(&nh, data_end, &iphdr);
-    //bpf_printk("\nIP Type v1: %x", bpf_ntohs(ip_type));
-    //bpf_printk("\nIP Type v2: %x", ip_type);
-    //bpf_printk("\nIP Type: %x", IPPROTO_TCP);
     if(ip_type != IPPROTO_TCP) {
-        //bpf_printk("\nDropped at IP\n\n");
+        bpf_printk("parse_packet: error while parsing IP header");
         return 0;
     }
 
@@ -243,14 +217,6 @@ static __always_inline int parse_packet(struct xdp_md *ctx, struct net_event *ne
     src_ip = ((saddr >> 16) & 0xFF) ^ src_ip;
     src_ip = ((saddr >> 24) & 0xFF) ^ src_ip;
     net_ev->ev_flow_id.src_ip = src_ip;
-    //bpf_printk("\nSource IP XOR: %d", src_ip);
-
-    ////bpf_printk("\nsaddr: %d", saddr);
-    /*unsigned char src_ip[4];
-    src_ip[0] = saddr & 0xFF;
-    src_ip[1] = (saddr >> 8) & 0xFF;
-    src_ip[2] = (saddr >> 16) & 0xFF;
-    src_ip[3] = (saddr >> 24) & 0xFF;*/
 
     __be32 daddr = iphdr->daddr;
     __u8 dst_ip;
@@ -259,22 +225,9 @@ static __always_inline int parse_packet(struct xdp_md *ctx, struct net_event *ne
     dst_ip = ((daddr >> 16) & 0xFF) ^ dst_ip;
     dst_ip = ((daddr >> 24) & 0xFF) ^ dst_ip;
     net_ev->ev_flow_id.dest_ip = dst_ip;
-
-    //bpf_printk("\nDestination IP XOR: %d", dst_ip);
-    /*unsigned char dst_ip[4];
-    bpf_printk("\ndaddr: %d", daddr);
-    dst_ip[0] = daddr & 0xFF;
-    dst_ip[1] = (daddr >> 8) & 0xFF;
-    dst_ip[2] = (daddr >> 16) & 0xFF;
-    dst_ip[3] = (daddr >> 24) & 0xFF;*/
-    
-    /*bpf_printk("\nSource IP p1: %d.%d", src_ip[0], src_ip[1]);
-    bpf_printk("\nSource IP p2: %d.%d", src_ip[2], src_ip[3]);
-    bpf_printk("\nDestination IP p1: %d.%d", dst_ip[0], dst_ip[1]);
-    bpf_printk("\nDestination IP p2: %d.%d", dst_ip[2], dst_ip[3]);*/
     
     if(parse_tcphdr(&nh, data_end, &tcph) ==  -1) {
-        //bpf_printk("\nDropped at TCP\n\n");
+        bpf_printk("parse_packet: error while parsing TCP header");
         return 0;
     }
 
@@ -289,34 +242,67 @@ static __always_inline int parse_packet(struct xdp_md *ctx, struct net_event *ne
     dst_port = dport & 0xFF;
     dst_port = ((dport >> 8) & 0xFF) ^ dst_port;
     net_ev->ev_flow_id.dest_port = dst_port;
-    
-    /*bpf_printk("\nDestination port: %d\n\n", num);
-    tcph->dest = bpf_htons(bpf_ntohs(tcph->dest) - 1);*/
-
-    //bpf_printk("\nSource port: %d", bpf_ntohs(tcph->source));
-    //bpf_printk("\nDestination port: %d\n\n", bpf_ntohs(tcph->dest));
 
     define_minor_type(net_ev);
+
+    __builtin_memcpy(meta_hdr->src_mac, eth->h_source, ETH_ALEN);
+    __builtin_memcpy(meta_hdr->dst_mac, eth->h_dest, ETH_ALEN);
+    meta_hdr->src_ip = iphdr->saddr;
+    meta_hdr->dst_ip = iphdr->daddr;
+    meta_hdr->src_port = tcph->source;
+    meta_hdr->dst_port = tcph->dest;
 
     return 1;
 }
 
-/*static __always_inline int modify_fake_packet(struct xdp_md *ctx) {
-    void *data_end = (void *)(long)ctx->data_end;
-    void *data     = (void *)(long)ctx->data;
+static __always_inline int mutate_pkt(struct xdp_md *redirect_pkt, struct net_event *net_ev) {
 
-    void* pos = data;
+    void *data_end = (void *)(long)redirect_pkt->data_end;
+    void *data     = (void *)(long)redirect_pkt->data;
 
-    struct test *teste = pos;
-    if (teste + 1 > data_end)
-        return -1;
+    __u32 pkt_len = data_end - data;
 
-    pos = teste + 1;
-    teste = data;
-    teste->value = teste->value + 1;
+    __u32 original_header_len = sizeof(struct ethhdr) + sizeof(struct iphdr) + sizeof(struct tcphdr);
 
-    return 0;
-}*/
+    __u32 new_header_len = sizeof(struct metadata_hdr);
+
+    struct metadata_hdr new_hdr;
+    new_hdr.data_len = pkt_len - original_header_len;
+
+    if(!parse_packet(data, data_end, net_ev, &new_hdr))
+        return 0;
+
+    bpf_xdp_adjust_head(redirect_pkt, original_header_len - new_header_len);
+
+    data_end = (void *)(long)redirect_pkt->data_end;
+    data     = (void *)(long)redirect_pkt->data;
+    pkt_len = data_end - data;
+
+    new_hdr.metadata_end = pkt_len;
+
+    if(data + sizeof(new_hdr) > data_end)
+        return 0;
+
+    __builtin_memcpy(data, &new_hdr, sizeof(new_hdr));
+
+    bpf_xdp_adjust_tail(redirect_pkt, 2000);
+
+    return 1;
+}
+
+static __always_inline struct context * retrieve_ctx(struct flow_id flow) {
+    struct context *ctx = bpf_map_lookup_elem(&context_hash, &flow);
+    if(!ctx) {
+        struct context new_ctx = {0, 0, 0};
+        bpf_map_update_elem(&context_hash, &flow, &new_ctx, BPF_NOEXIST);
+        ctx = bpf_map_lookup_elem(&context_hash, &flow);
+        if(!ctx) {
+            return NULL;
+        }
+        return ctx;
+    }
+    return ctx;
+}
 
 static __always_inline void update_app_len(struct app_info *app_info, struct flow_id ev_flow_id) {
     // Note: change this later when we can dynamicaly assign entries to MoM arrays
@@ -673,10 +659,10 @@ static __always_inline int restart_timer(struct flow_id flow, __u64 time,
         return -1;
     }
 
-    if(!map_entry->triggered) {
+    /*if(!map_entry->triggered) {
         bpf_printk("restart_timer: timer isn't currently triggered");
         return -1;
-    }
+    }*/
 
     if(bpf_timer_start(&(map_entry->timer), time, 0) != 0) {
         bpf_printk("restart_timer: couldn't restart timer");
@@ -737,44 +723,56 @@ static __always_inline int initialize_timer(struct timer_event event,
     return 0;
 }
 
-static __always_inline void example_ep(struct net_event *event, struct context *ctx,
-    struct intermediate_output *inter_output) {
-        
+static __always_inline void example_ep_app(struct net_event *event, struct context *ctx,
+    struct intermediate_output *inter_output, struct xdp_md *redirect_pkt) {
+
+    if((void *)(long)redirect_pkt->data + sizeof(struct metadata_hdr) > (void *)(long)redirect_pkt->data_end)
+        return;
+    struct metadata_hdr *meta_hdr = (struct metadata_hdr *)(long)redirect_pkt->data;
+    struct app_metadata metadata = {IS_APP_METADATA, 6, 7, 8, 9};
+    if(meta_hdr->metadata_end > 4000)
+        return;
+    if((void *)(long)redirect_pkt->data + (meta_hdr->metadata_end) + sizeof(metadata) > (void *)(long)redirect_pkt->data_end)
+        return;
+    __builtin_memcpy((void *)(long)redirect_pkt->data + (meta_hdr->metadata_end), &metadata, sizeof(metadata));
+    meta_hdr->metadata_end += sizeof(metadata);
+}
+
+static __always_inline void example_ep_net(struct net_event *event, struct context *ctx,
+    struct intermediate_output *inter_output, struct xdp_md *redirect_pkt) {
+
     struct prog_event new_prog_ev;
-    struct timer_event new_event;
-    new_event.ev_flow_id = event->ev_flow_id;
-    new_event.event_type = MISS_ACK;
-    new_event.value = 0;
-    initialize_timer(new_event, TEN_SEC, EP_TIMER_TEST);
-    if(1 == 0) {
+    if(0) {  
+        struct timer_event new_event;
+        new_event.ev_flow_id = event->ev_flow_id;
+        new_event.event_type = MISS_ACK;
+        new_event.value = 0;
+        initialize_timer(new_event, TEN_SEC, EP_TIMER_TEST);
         restart_timer(new_event.ev_flow_id, ONE_SEC, EP_TIMER_TEST);
         cancel_timer(new_event.ev_flow_id, EP_TIMER_TEST);
     }
 
-    for(int i = 0; i < 2; i++) {
+    for(int i = 0; i < 1; i++) {
         new_prog_ev.ev_flow_id = event->ev_flow_id;
         new_prog_ev.event_type = PROG_TEST;
         new_prog_ev.value = 0;
         generic_event_enqueue(&new_prog_ev, PROG_EVENT);
     }
-}
 
-static __always_inline struct context * retrieve_ctx(struct flow_id flow) {
-    struct context *ctx = bpf_map_lookup_elem(&context_hash, &flow);
-    if(!ctx) {
-        struct context new_ctx = {0, 0, 0};
-        bpf_map_update_elem(&context_hash, &flow, &new_ctx, BPF_NOEXIST);
-        ctx = bpf_map_lookup_elem(&context_hash, &flow);
-        if(!ctx) {
-            return NULL;
-        }
-        return ctx;
-    }
-    return ctx;
+    if((void *)(long)redirect_pkt->data + sizeof(struct metadata_hdr) > (void *)(long)redirect_pkt->data_end)
+        return;
+    struct metadata_hdr *meta_hdr = (struct metadata_hdr *)(long)redirect_pkt->data;
+    struct net_metadata metadata = {IS_NET_METADATA, 1, 2};
+    if(meta_hdr->metadata_end > 4000)
+        return;
+    if((void *)(long)redirect_pkt->data + (meta_hdr->metadata_end) + sizeof(metadata) > (void *)(long)redirect_pkt->data_end)
+        return;
+    __builtin_memcpy((void *)(long)redirect_pkt->data + (meta_hdr->metadata_end), &metadata, sizeof(metadata));
+    meta_hdr->metadata_end += sizeof(metadata);
 }
 
 static __always_inline void dispatcher(void * event, enum minor_event_type type,
-    struct context *ctx) {
+    struct context *ctx, struct xdp_md *redirect_pkt) {
 
     struct intermediate_output inter_output;
 
@@ -782,11 +780,12 @@ static __always_inline void dispatcher(void * event, enum minor_event_type type,
     {
     case SEND:
         bpf_printk("SEND");
+        example_ep_app(event, ctx, &inter_output, redirect_pkt);
         break;
     
     case ACK:
         bpf_printk("ACK");
-        example_ep(event, ctx, &inter_output);
+        example_ep_net(event, ctx, &inter_output, redirect_pkt);
         break;
     
     case MISS_ACK:
@@ -874,20 +873,20 @@ static long ev_process_loop(__u32 index, struct sched_loop_args * arg) {
         new_ev.value = app_ev->value;
         // Set occupied bit to 0
         __sync_fetch_and_xor(&app_ev->occupied, 1);
-        dispatcher(&new_ev, minor_type, arg->ctx);
+        dispatcher(&new_ev, minor_type, arg->ctx, arg->redirect_pkt);
     } else {
-        dispatcher(ev, minor_type, arg->ctx);
+        dispatcher(ev, minor_type, arg->ctx, arg->redirect_pkt);
     }
 
     return 0;
 }
 
-static __always_inline int net_ev_process(struct xdp_md *ctx, struct flow_id * f_id,
+static __always_inline int net_ev_process(struct xdp_md *redirect_pkt, struct flow_id * f_id,
     struct context **flow_context) {
 
     struct net_event net_ev;
 
-    if(!parse_packet(ctx, &net_ev))
+    if(!mutate_pkt(redirect_pkt, &net_ev))
         return 0;
 
     *f_id = net_ev.ev_flow_id;
@@ -897,37 +896,35 @@ static __always_inline int net_ev_process(struct xdp_md *ctx, struct flow_id * f
         return 0;
     }
 
-    dispatcher(&net_ev, net_ev.event_type, *flow_context);
+    dispatcher(&net_ev, net_ev.event_type, *flow_context, redirect_pkt);
 
     return 1;
 }
 
 SEC("xdp")
-int net_arrive(struct xdp_md *ctx)
+int net_arrive(struct xdp_md *redirect_pkt)
 {
     //__u64 arrival_time = bpf_ktime_get_ns();
 
     struct sched_loop_args arg;
     arg.ctx = NULL;
+    arg.redirect_pkt = redirect_pkt;
 
     // Process network event first
-    if(!net_ev_process(ctx, &arg.f_id, &arg.ctx))
+    if(!net_ev_process(redirect_pkt, &arg.f_id, &arg.ctx))
         return XDP_DROP;
+        
     arg.f_info = find_queue_flow_info(arg.f_id);
     if(!arg.f_info)
         return XDP_DROP;
 
     update_app_len(&arg.f_info->app_info, arg.f_id);
-    //bpf_printk("\n%d %d\n", arg.f_info->timer_info.len_timer_queue, arg.f_info->app_info.len_app_queue);
-    //bpf_printk("\n%d\n", arg.f_info->prog_info.len_prog_queue);
 
     bpf_loop(MAX_NUM_PROCESSED_EVENTS, ev_process_loop, &arg, 0);
 
-    //modify_fake_packet(ctx);
-
     /* An entry here means that the correspnding queue_id
      * has an active AF_XDP socket bound to it. */
-    int rx_queue_index = ctx->rx_queue_index;
+    int rx_queue_index = redirect_pkt->rx_queue_index;
     if (bpf_map_lookup_elem(&xsks_map, &rx_queue_index)) {
         /*__u64 finish_time = bpf_ktime_get_ns();
         int cpu = bpf_get_smp_processor_id();

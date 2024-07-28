@@ -8,6 +8,9 @@
 #define MAX_NUMBER_TIMERS 10
 #define NO_TIMER_AVAILABLE 999999
 #define MAX_NUMBER_PROG_EVENTS 10
+#define MAX_NUM_NET_METADATA 20
+#define IS_NET_METADATA 0
+#define IS_APP_METADATA 1
 
 enum major_event_type {
     APP_EVENT,
@@ -181,14 +184,36 @@ struct sched_loop_args {
     struct queue_flow_info *f_info;
     struct flow_id f_id;
     struct context *ctx;
+    struct xdp_md *redirect_pkt;
 };
 
 struct timer_loop_args {
     __u32 index;
 };
 
-struct test {
-    int value;
+struct metadata_hdr {
+    __u8 src_mac[6];
+    __u8 dst_mac[6];
+    __be32 src_ip;
+    __be32 dst_ip;
+    __be16 src_port;
+    __be16 dst_port;
+    __u16 data_len;
+    __u16 metadata_end;
+};
+
+struct app_metadata {
+    __u8 type_metadata;
+    __u32 value1;
+    __u32 value2;
+    __u32 value3;
+    __u32 value4;
+};
+
+struct net_metadata {
+    __u8 type_metadata;
+    __u32 value1;
+    __u16 value2;
 };
 
 #endif
