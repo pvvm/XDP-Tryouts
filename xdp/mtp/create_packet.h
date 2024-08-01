@@ -105,4 +105,38 @@ struct pkt_info temporary_default_info() {
     return info;
 }
 
+struct flow_id convert_pktinfo_to_flow_id(struct pkt_info p_info) {
+    struct flow_id f_id;
+
+    __be32 saddr = p_info.dst_ip; 
+    __u8 src_ip;
+    src_ip = saddr & 0xFF;
+    src_ip = ((saddr >> 8) & 0xFF) ^ src_ip;
+    src_ip = ((saddr >> 16) & 0xFF) ^ src_ip;
+    src_ip = ((saddr >> 24) & 0xFF) ^ src_ip;
+	f_id.src_ip = src_ip;
+
+	__be32 daddr = p_info.src_ip;
+    __u8 dst_ip;
+    dst_ip = daddr & 0xFF;
+    dst_ip = ((daddr >> 8) & 0xFF) ^ dst_ip;
+    dst_ip = ((daddr >> 16) & 0xFF) ^ dst_ip;
+    dst_ip = ((daddr >> 24) & 0xFF) ^ dst_ip;
+	f_id.dest_ip = dst_ip;
+
+	__be16 sport = ntohs(p_info.dst_port);
+	__u8 src_port;
+    src_port = sport & 0xFF;
+    src_port = ((sport >> 8) & 0xFF) ^ src_port;
+	f_id.src_port = src_port;
+
+	__be16 dport = ntohs(p_info.src_port);
+	__u8 dst_port;
+    dst_port = dport & 0xFF;
+    dst_port = ((dport >> 8) & 0xFF) ^ dst_port;
+	f_id.dest_port = dst_port;
+
+    return f_id;
+}
+
 #endif

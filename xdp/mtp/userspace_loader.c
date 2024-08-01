@@ -656,39 +656,17 @@ void * producer_and_afxdp(void *arg) {
 	pthread_exit(NULL);
 }
 
-int set_mom_flow_entry(struct pkt_info p_info, int *map_fds) {
-	struct flow_id f_id;
-	__be32 saddr = p_info.dst_ip; 
-    __u8 src_ip;
-    src_ip = saddr & 0xFF;
-    src_ip = ((saddr >> 8) & 0xFF) ^ src_ip;
-    src_ip = ((saddr >> 16) & 0xFF) ^ src_ip;
-    src_ip = ((saddr >> 24) & 0xFF) ^ src_ip;
-	f_id.src_ip = src_ip;
+int set_initial_ctx_values(struct flow_id f_id, int context_fd) {
+	struct context new_ctx = {1, 2, 3};
+	int err = bpf_map_update_elem(context_fd, &f_id, &new_ctx, BPF_ANY);
+	if(err < 0) {
+		printf("Error while updating context entry %d", err);
+		return 0;
+	}
+	return 1;
+}
 
-	__be32 daddr = p_info.src_ip;
-    __u8 dst_ip;
-    dst_ip = daddr & 0xFF;
-    dst_ip = ((daddr >> 8) & 0xFF) ^ dst_ip;
-    dst_ip = ((daddr >> 16) & 0xFF) ^ dst_ip;
-    dst_ip = ((daddr >> 24) & 0xFF) ^ dst_ip;
-	f_id.dest_ip = dst_ip;
-
-	__be16 sport = ntohs(p_info.dst_port);
-	__u8 src_port;
-    src_port = sport & 0xFF;
-    src_port = ((sport >> 8) & 0xFF) ^ src_port;
-	f_id.src_port = src_port;
-
-	__be16 dport = ntohs(p_info.src_port);
-	__u8 dst_port;
-    dst_port = dport & 0xFF;
-    dst_port = ((dport >> 8) & 0xFF) ^ dst_port;
-	f_id.dest_port = dst_port;
-
-	//printf("%d %d %d %d", src_ip, dst_ip, src_port, dst_port);
-    
-
+int set_mom_flow_entry(struct flow_id f_id, int *map_fds) {
 	int inner_fd;
 	for(int i = 0; i < NUMBER_MOM; i++) {
 		inner_fd = bpf_map_create(BPF_MAP_TYPE_ARRAY, NULL, sizeof(__u32), mm_info[i].size, mm_info[i].num_elements, 0);
@@ -697,9 +675,9 @@ int set_mom_flow_entry(struct pkt_info p_info, int *map_fds) {
 			close(inner_fd);
 			return 0;
 		}
-		int teste = bpf_map_update_elem(map_fds[i], &f_id, &inner_fd, BPF_ANY);
-		if(teste < 0) {
-			printf("Error while updating outer map %s %d\n", mm_info[i].name, teste);
+		int err = bpf_map_update_elem(map_fds[i], &f_id, &inner_fd, BPF_ANY);
+		if(err < 0) {
+			printf("Error while updating outer map %s %d\n", mm_info[i].name, err);
 			close(inner_fd);
 			return 0;
 		}
@@ -709,10 +687,13 @@ int set_mom_flow_entry(struct pkt_info p_info, int *map_fds) {
 	return 1;
 }
 
-void distribute_requests(int *map_fds) {
+void distribute_requests(int *map_fds, int context_fd) {
 	//cpu_req_queues = create_queue();
 	struct pkt_info p_info = temporary_default_info();
-	if(!set_mom_flow_entry(p_info, map_fds))
+	struct flow_id f_id = convert_pktinfo_to_flow_id(p_info);
+	if(!set_mom_flow_entry(f_id, map_fds))
+		return;
+	if(!set_initial_ctx_values(f_id, context_fd))
 		return;
 
 	init_queue_v2(cpu_req_queues_v2);
@@ -945,7 +926,7 @@ int main(int argc, char **argv)
 		CPU_ZERO(&cpuset);
 	}
 
-	distribute_requests(maps_fd);
+	distribute_requests(maps_fd, context_fd);
 
 	for(int i = 0; i < MAX_NUMBER_CORES; i++) {
 		pthread_join(threads[i], NULL);
