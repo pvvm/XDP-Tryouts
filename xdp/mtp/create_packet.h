@@ -99,8 +99,8 @@ struct pkt_info temporary_default_info() {
     info.src_ip = inet_addr("10.7.0.7");
     info.dst_ip = inet_addr("10.7.0.8");
 
-    info.src_port = htonl(230);
-    info.dst_port = htonl(3);
+    info.src_port = htons(230);
+    info.dst_port = htons(3);
 
     return info;
 }

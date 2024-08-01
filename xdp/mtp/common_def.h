@@ -25,15 +25,15 @@ enum minor_event_type {
     PROG_TEST,
 };
 
-enum timer_instances {
+enum timer_id {
     EP_TIMER_TEST,
     EP_TIMER_TEST2,
 };
 
 struct flow_id {
     __u8 src_ip;
-    __u8 src_port;
     __u8 dest_ip;
+    __u8 src_port;
     __u8 dest_port;
 };
 
@@ -134,6 +134,11 @@ struct timer_trigger {
     __u32 triggered;
 };
 
+struct timer_trigger_id {
+    struct flow_id f_id;
+    __u32 timer_id;
+};
+
 struct queue_head_tail {
     __u32 net_head;
     __u32 net_tail;
@@ -215,5 +220,6 @@ struct net_metadata {
     __u32 value1;
     __u16 value2;
 };
+
 
 #endif

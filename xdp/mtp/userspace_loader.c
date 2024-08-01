@@ -43,6 +43,8 @@
 #define RX_BATCH_SIZE     	64
 #define INVALID_UMEM_FRAME 	UINT64_MAX
 
+#define NUMBER_MOM			3
+
 static const char *default_filename = "kernel_xdp.o";
 
 static const char *default_progname = "net_arrive";
@@ -97,6 +99,18 @@ struct argument {
 	int prod_map_fd;
 	int tail_map_fd;
 };
+
+struct mom_map_info {
+	char name[40];
+	int size;
+	int num_elements;
+};
+
+struct mom_map_info mm_info[NUMBER_MOM] =
+								{{"outer_app_hash", sizeof(struct app_event), MAX_EVENT_QUEUE_LEN},
+								{"outer_timer_hash", sizeof(struct timer_event), MAX_EVENT_QUEUE_LEN},
+								{"outer_prog_hash", sizeof(struct prog_event), MAX_EVENT_QUEUE_LEN}};
+
 
 static inline __u32 xsk_ring_prod__free(struct xsk_ring_prod *r)
 {
@@ -331,24 +345,6 @@ static void complete_tx(struct xsk_socket_info *xsk)
 	}
 }
 
-static inline __sum16 csum16_add(__sum16 csum, __be16 addend)
-{
-	uint16_t res = (uint16_t)csum;
-
-	res += (__u16)addend;
-	return (__sum16)(res + (res < (__u16)addend));
-}
-
-static inline __sum16 csum16_sub(__sum16 csum, __be16 addend)
-{
-	return csum16_add(csum, ~addend);
-}
-
-static inline void csum_replace2(__sum16 *sum, __be16 old, __be16 new)
-{
-	*sum = ~csum16_add(csum16_sub(~(*sum), old), new);
-}
-
 static bool submit_multiple_pkts(struct xsk_socket_info *xsk, struct metadata_hdr *meta_hdr,
 	struct net_metadata *array_net_meta[], int num_pkts_send) {
 
@@ -561,8 +557,6 @@ void produce_app_events(int cpu_id, int outer_map_fd, int tail_map_fd, int *inne
 		return;
 	*last_head = curr_head;
 
-	//printf("%d\n", cpu_id);
-
 	err = bpf_map_lookup_elem(outer_map_fd, &(new_entry->ev_flow_id), &inner_id);
 	if(err < 0) {
 		printf("Couldn't find entry of outer map\n");
@@ -654,7 +648,7 @@ void * producer_and_afxdp(void *arg) {
 		}
 		handle_receive_packets(xsk_socket);
 
-		//if(0)
+		if(0)
 		send_packet_directly(xsk_socket);
 		//sleep(1);
 	}
@@ -662,97 +656,68 @@ void * producer_and_afxdp(void *arg) {
 	pthread_exit(NULL);
 }
 
-#define NANOSEC_PER_SEC 1000000000 /* 10^9 */
-/*static uint64_t gettime(void)
-{
-	struct timespec t;
-	int res;
+int set_mom_flow_entry(struct pkt_info p_info, int *map_fds) {
+	struct flow_id f_id;
+	__be32 saddr = p_info.dst_ip; 
+    __u8 src_ip;
+    src_ip = saddr & 0xFF;
+    src_ip = ((saddr >> 8) & 0xFF) ^ src_ip;
+    src_ip = ((saddr >> 16) & 0xFF) ^ src_ip;
+    src_ip = ((saddr >> 24) & 0xFF) ^ src_ip;
+	f_id.src_ip = src_ip;
 
-	res = clock_gettime(CLOCK_MONOTONIC, &t);
-	if (res < 0) {
-		fprintf(stderr, "Error with gettimeofday! (%i)\n", res);
-		exit(EXIT_FAIL);
+	__be32 daddr = p_info.src_ip;
+    __u8 dst_ip;
+    dst_ip = daddr & 0xFF;
+    dst_ip = ((daddr >> 8) & 0xFF) ^ dst_ip;
+    dst_ip = ((daddr >> 16) & 0xFF) ^ dst_ip;
+    dst_ip = ((daddr >> 24) & 0xFF) ^ dst_ip;
+	f_id.dest_ip = dst_ip;
+
+	__be16 sport = ntohs(p_info.dst_port);
+	__u8 src_port;
+    src_port = sport & 0xFF;
+    src_port = ((sport >> 8) & 0xFF) ^ src_port;
+	f_id.src_port = src_port;
+
+	__be16 dport = ntohs(p_info.src_port);
+	__u8 dst_port;
+    dst_port = dport & 0xFF;
+    dst_port = ((dport >> 8) & 0xFF) ^ dst_port;
+	f_id.dest_port = dst_port;
+
+	//printf("%d %d %d %d", src_ip, dst_ip, src_port, dst_port);
+    
+
+	int inner_fd;
+	for(int i = 0; i < NUMBER_MOM; i++) {
+		inner_fd = bpf_map_create(BPF_MAP_TYPE_ARRAY, NULL, sizeof(__u32), mm_info[i].size, mm_info[i].num_elements, 0);
+		if(inner_fd < 0) {
+			printf("Error while creating inner array for M-of-M %s\n", mm_info[i].name);
+			close(inner_fd);
+			return 0;
+		}
+		int teste = bpf_map_update_elem(map_fds[i], &f_id, &inner_fd, BPF_ANY);
+		if(teste < 0) {
+			printf("Error while updating outer map %s %d\n", mm_info[i].name, teste);
+			close(inner_fd);
+			return 0;
+		}
+		close(inner_fd);
 	}
-	return (uint64_t) t.tv_sec * NANOSEC_PER_SEC + t.tv_nsec;
+
+	return 1;
 }
 
-static double calc_period(struct stats_record *r, struct stats_record *p)
-{
-	double period_ = 0;
-	__u64 period = 0;
-
-	period = r->timestamp - p->timestamp;
-	if (period > 0)
-		period_ = ((double) period / NANOSEC_PER_SEC);
-
-	return period_;
-}*/
-
-/*static void stats_print(struct stats_record *stats_rec,
-			struct stats_record *stats_prev,
-			int cpu_id)
-{
-	uint64_t packets, bytes;
-	double period;
-	double pps;
-	double bps;
-
-	char *fmt = "%-12s %'11lld pkts (%'10.0f pps)"
-		" %'11lld Kbytes (%'6.0f Mbits/s)"
-		" period:%f\n";
-
-	period = calc_period(stats_rec, stats_prev);
-	if (period == 0)
-		period = 1;
-
-	packets = stats_rec->rx_packets - stats_prev->rx_packets;
-	pps     = packets / period;
-
-	bytes   = stats_rec->rx_bytes   - stats_prev->rx_bytes;
-	bps     = (bytes * 8) / period / 1000000;
-
-	printf(fmt, "AF_XDP RX:", stats_rec->rx_packets, pps,
-	       stats_rec->rx_bytes / 1000 , bps,
-	       period);
-
-	packets = stats_rec->tx_packets - stats_prev->tx_packets;
-	pps     = packets / period;
-
-	bytes   = stats_rec->tx_bytes   - stats_prev->tx_bytes;
-	bps     = (bytes * 8) / period / 1000000;
-
-	printf(fmt, "       TX:", stats_rec->tx_packets, pps,
-	       stats_rec->tx_bytes / 1000 , bps,
-	       period);
-
-	printf("\n");
-	printf("CPU %d\nRX: %lu\tTX:%lu\n\n", cpu_id, stats_rec->rx_packets, stats_rec->tx_packets);
-}*/
-
-/*static void *stats_poll(void *arg)
-{
-	unsigned int interval = 2;
-	struct xsk_socket_info *xsk = arg;
-	static struct stats_record previous_stats = { 0 };
-
-	//previous_stats.timestamp = gettime();
-
-	// Trick to pretty printf with thousands separators use %'
-	setlocale(LC_NUMERIC, "en_US");
-
-	while (!global_exit) {
-		sleep(interval);
-		//xsk->stats.timestamp = gettime();
-		stats_print(&xsk->stats, &previous_stats, xsk->cpu_id);
-		previous_stats = xsk->stats;
-	}
-	return NULL;
-}*/
-
-void distribute_requests() {
+void distribute_requests(int *map_fds) {
 	//cpu_req_queues = create_queue();
+	struct pkt_info p_info = temporary_default_info();
+	if(!set_mom_flow_entry(p_info, map_fds))
+		return;
+
 	init_queue_v2(cpu_req_queues_v2);
-	struct app_event event = {SEND, {0, 0, 0, 0}, 1, 0};
+	// Note: at this moment the flow_id is fixed to this one
+	struct app_event event = {SEND, {5, 10, 3, 230}, 1, 0};
 	int cpu_to_send = 0;
 	while(1) {
 		if(!scanf("%d", &cpu_to_send))
@@ -766,6 +731,25 @@ void distribute_requests() {
 		print_queue_v2(cpu_req_queues_v2);
 	}
 	//free_queue(cpu_req_queues);
+}
+
+int get_all_map_fd(int *map_fds, int *tail_app_fd, int *context_fd) {
+
+	for(int i = 0; i < NUMBER_MOM; i++) {
+		map_fds[i] = find_map_fd(xdp_program__bpf_obj(prog), mm_info[i].name);
+		if(map_fds[i] < 0)
+			return 0;
+	}
+
+	*tail_app_fd = find_map_fd(xdp_program__bpf_obj(prog), "tail_app_hash");
+	if(*tail_app_fd < 0)
+		return 0;
+
+	*context_fd = find_map_fd(xdp_program__bpf_obj(prog), "context_hash");
+	if(*context_fd < 0)
+		return 0;
+
+	return 1;
 }
 
 static void exit_application(int signal)
@@ -937,15 +921,12 @@ int main(int argc, char **argv)
 		}*/
 	}
 
-	int prod_map_fd = find_map_fd(xdp_program__bpf_obj(prog), "outer_app_hash");
-	if (prod_map_fd < 0) {
-		exit(EXIT_FAIL_BPF);
-	}
+	
 
-	int tail_map_fd = find_map_fd(xdp_program__bpf_obj(prog), "tail_app_hash");
-	if (tail_map_fd < 0) {
+	int maps_fd[4];
+	int tail_app_map_fd, context_fd;
+	if(!get_all_map_fd(maps_fd, &tail_app_map_fd, &context_fd))
 		exit(EXIT_FAIL_BPF);
-	}
 
 	pthread_t threads[MAX_NUMBER_CORES];
 	cpu_set_t cpuset;
@@ -954,8 +935,8 @@ int main(int argc, char **argv)
 		struct argument *arg = malloc(sizeof(struct argument));
 		arg->cfg = &cfg;
 		arg->xsk_socket = xsk_socket[i];
-		arg->prod_map_fd = prod_map_fd;
-		arg->tail_map_fd = tail_map_fd;
+		arg->prod_map_fd = maps_fd[0];
+		arg->tail_map_fd = tail_app_map_fd;
 		CPU_SET(i, &cpuset);
 		/* Receive and count packets than drop them */
 		pthread_create(&threads[i], NULL, producer_and_afxdp, (void *) arg);
@@ -964,7 +945,7 @@ int main(int argc, char **argv)
 		CPU_ZERO(&cpuset);
 	}
 
-	distribute_requests();
+	distribute_requests(maps_fd);
 
 	for(int i = 0; i < MAX_NUMBER_CORES; i++) {
 		pthread_join(threads[i], NULL);
