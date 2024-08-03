@@ -12,6 +12,8 @@
 
 #define MAX_NUMBER_CORES 8
 
+__u64 real_fake_packet[MAX_NUMBER_CORES];
+
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __type(key, __u32);
@@ -22,7 +24,7 @@ struct {
 struct inner_map_queue {
     __uint(type, BPF_MAP_TYPE_QUEUE);
     __type(value, __u32);
-    __uint(max_entries, 1248);
+    __uint(max_entries, 9824);
 } inner_map_queue0 SEC(".maps"), inner_map_queue1 SEC(".maps"), inner_map_queue2 SEC(".maps"), inner_map_queue3 SEC(".maps"),
 inner_map_queue4 SEC(".maps"), inner_map_queue5 SEC(".maps"), inner_map_queue6 SEC(".maps"), inner_map_queue7 SEC(".maps");
 
@@ -72,12 +74,40 @@ static __always_inline int lookup_map_of_maps_queue (int key, int number) {
 SEC("xdp")
 int  simply_drop(struct xdp_md *ctx)
 {
-
     int cpu = bpf_get_smp_processor_id();
+    //if(0 <= cpu && cpu < MAX_NUMBER_CORES)
+    //    __sync_fetch_and_or(&real_fake_packet[cpu], 1);
 
     void *data_end = (void *)(long)ctx->data_end;
-    void *data = (void *)(long)ctx->data;
-    //bpf_printk("\nLength of packet: %d", data_end - data);
+    void *data     = (void *)(long)ctx->data;
+
+    /*struct ethhdr *eth;
+    struct iphdr *iphdr;
+
+    struct hdr_cursor nh;
+    int eth_type, ip_type;
+
+    nh.pos = data;
+
+    eth_type = parse_ethhdr(&nh, data_end, &eth);
+    if (eth_type != bpf_htons(ETH_P_IP)) {
+        bpf_printk("parse_packet: error while parsing ETH header");
+        return 0;
+    }
+
+    ip_type = parse_iphdr(&nh, data_end, &iphdr);
+    if(ip_type != IPPROTO_TCP) {
+        bpf_printk("parse_packet: error while parsing IP header");
+        return 0;
+    }
+
+    cpu = bpf_get_smp_processor_id();
+    
+    if(iphdr->id == 65535) {
+        if(0 <= cpu && cpu < MAX_NUMBER_CORES) {
+        __sync_fetch_and_and(&real_fake_packet[cpu], 0);
+    }
+    }*/
 
     // Update counter map
     __u64 counter = update_counter(cpu);
@@ -92,6 +122,15 @@ int  simply_drop(struct xdp_md *ctx)
             lookup_map_of_maps_queue(cpu, 1);
         }
     }
+
+    /*cpu = bpf_get_smp_processor_id();
+    if(iphdr->id == 65535) {
+        if(0 <= cpu && cpu < MAX_NUMBER_CORES) {
+            //bpf_printk("%d", real_fake_packet[cpu]);
+            if(__sync_fetch_and_or(&real_fake_packet[cpu], 0))
+                bpf_printk("IT HAPPENED");
+        }
+    }*/
 
     return XDP_DROP;
 }

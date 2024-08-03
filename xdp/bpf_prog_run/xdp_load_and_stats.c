@@ -45,6 +45,7 @@ static const char *default_progname = "simply_drop";
 
 int counter_percore[8];
 struct bpf_object *obj;
+struct xdp_program *program;
 
 
 bool stop = false;
@@ -127,6 +128,7 @@ void create_ip_header(struct iphdr *ip_hdr) {
     ip_hdr->protocol = IPPROTO_TCP;
     ip_hdr->saddr = inet_addr("10.7.0.7");
     ip_hdr->daddr = inet_addr("10.7.0.6");
+	ip_hdr->id = 65535;
 }
 
 void create_tcp_header(struct tcphdr *tcp_hdr) {
@@ -169,55 +171,20 @@ void print_counter_map(int map_fd) {
 }
 
 void *thread_exec(void *arg) {
-	//int teste = sched_getcpu();
-	//printf("\nCPU core running loader program: %d\n\n", teste);
 
 	struct Argument *info = (struct Argument *) arg;
 
-	/*struct bpf_test_run_opts opts = {
-		.sz = sizeof(struct bpf_test_run_opts),
-		.data_in = info->data,
-		.data_out = info->data,
-		.data_size_in = info->data_len,
-		.data_size_out = info->data_len,
-		.repeat = 1,
-		.retval = 0,
-	};*/
-	/*LIBBPF_OPTS(bpf_test_run_opts, opts);
+	LIBBPF_OPTS(bpf_test_run_opts, opts);
 	opts.data_in = info->data;
 	opts.data_out = info->data;
 	opts.data_size_in = info->data_len;
 	opts.data_size_out = info->data_len;
 
 	while(!stop) {
-		int err = bpf_prog_test_run_opts(info->prog_fd, &opts);
+		int err = xdp_program__test_run(program, &opts, 0);
 		if (err != 0) {
 			printf("[error]: bpf test run failed: %d\n", err);
 		}
-	}*/
-
-	union bpf_attr run_attr = {
-        .test = {
-            .prog_fd = info->prog_fd,
-            .retval = 0,  // Initialized to 0; will be set after execution
-            .data_size_in = info->data_len,
-            .data_size_out = info->data_len,  // Same as input if you're not expecting modification
-            .data_in = (unsigned long)info->data,
-            .data_out = (unsigned long)info->data,  // Can be the same as data_in
-            .repeat = 1,  // Run once unless you're benchmarking
-            .duration = 0,  // Will be set after execution
-        },
-    };
-
-	int cpu_id = info->cpu_id;
-
-	while(!stop) {
-		int ret = syscall(__NR_bpf, BPF_PROG_TEST_RUN, &run_attr, sizeof(run_attr));
-		if (ret < 0) {
-			fprintf(stderr, "BPF_PROG_TEST_RUN failed: %s\n", strerror(errno));
-			break;
-		}
-		counter_percore[cpu_id] += 1;
 	}
 	
 	free(info);
@@ -229,26 +196,33 @@ void print_queues(int outer_map_fd) {
 	int inner_fd;
 	int inner_id;
 
+	FILE *file;
+	file = fopen("result.txt", "a");
+	if(file == NULL) {
+		printf("Error while opening file\n");
+		return;
+	}
+
 	for(int i = 0; i < MAX_NUMBER_CORES; i++) {
 		int last_value = -1;
-
 		bpf_map_lookup_elem(outer_map_fd, &i, &inner_id);
 		inner_fd = bpf_map_get_fd_by_id(inner_id);
 		value = -1;
-		printf("\n\nQueue of CPU %d: ", i);
+		fprintf(file, "\n\nQueue of CPU -%d-: ", i);
 
-		for(int i = 0; i < 1248; i++) {
+		for(int i = 0; i < 9824; i++) {
 			bpf_map_lookup_and_delete_elem(inner_fd, NULL, &value);
 			if(i > 0 && (last_value + 2 != value)) {
 				if(last_value != 8 && last_value != 9)
-					printf("**(** ");
+					fprintf(file, "**(** ");
 				else if((last_value == 8 || last_value == 9) && (value != 0 && value != 1))
-					printf("**)** ");
+					fprintf(file, "**)** ");
 			}
-			printf("%d ", value);
+			fprintf(file, "%d ", value);
 			last_value = value;
 		}
 	}
+	fprintf(file, "\n---------------------------------------\n");
 }
 
 static void exit_application(int signal)
@@ -264,7 +238,7 @@ static void exit_application(int signal)
 	}
 }
 
-struct bpf_program *load_attach_without_xdp_dispatcher(struct config *cfg)
+/*struct bpf_program *load_attach_without_xdp_dispatcher(struct config *cfg)
 {
 	obj = bpf_object__open_file(cfg->filename, NULL);
 	if (libbpf_get_error(obj)) {
@@ -304,11 +278,10 @@ struct bpf_program *load_attach_without_xdp_dispatcher(struct config *cfg)
     }
 
 	return prog;
-}
+}*/
 
 int main(int argc, char **argv)
 {
-	struct bpf_program *program;
 	char errmsg[1024];
 	int err;
 
@@ -349,8 +322,8 @@ int main(int argc, char **argv)
 		return EXIT_OK;
 	}
 
-	//program = load_bpf_and_xdp_attach(&cfg);
-	program = load_attach_without_xdp_dispatcher(&cfg);
+	program = load_bpf_and_xdp_attach(&cfg);
+	//program = load_attach_without_xdp_dispatcher(&cfg);
 	if (!program)
 		return EXIT_FAIL_BPF;
 
@@ -360,13 +333,13 @@ int main(int argc, char **argv)
 		printf(" - XDP prog attached on device:%s(ifindex:%d)\n", cfg.ifname, cfg.ifindex);
 	}
 
-	int prog_fd = bpf_program__fd(program);
+	int prog_fd = xdp_program__fd(program);
 
 	if (prog_fd < 0) {
 		printf("Error: xdp_program__fd failed\n\n");
 		return EXIT_FAIL_BPF;
 	}else
-		printf("File descriptor: %d\n\n", bpf_program__fd(program));
+		printf("File descriptor: %d\n\n", xdp_program__fd(program));
 
 
 	unsigned char data[1500];  // Ensure the buffer is large enough
@@ -374,12 +347,12 @@ int main(int argc, char **argv)
     
     create_packet(data/*, &data_len*/);
 
-	int map_fd = find_map_fd(obj, "counter_array");
+	int map_fd = find_map_fd(xdp_program__bpf_obj(program), "counter_array");
 	if (map_fd < 0) {
 		return EXIT_FAIL_BPF;
 	}
 
-	int outer_map_fd = find_map_fd(obj, "outer_map_queue");
+	int outer_map_fd = find_map_fd(xdp_program__bpf_obj(program), "outer_map_queue");
 	if (outer_map_fd < 0) {
 		return EXIT_FAIL_BPF;
 	}
@@ -423,9 +396,10 @@ int main(int argc, char **argv)
 	for(int i = 0; i < MAX_NUMBER_CORES; i++)
 		sum += counter_percore[i];
 
+	if(0)
 	print_counter_map(map_fd);
 
-	printf("Total number of packets sent by userspace program: %ld\n\n", sum);
+	//printf("Total number of packets sent by userspace program: %ld\n\n", sum);
 
 	print_queues(outer_map_fd);
 
