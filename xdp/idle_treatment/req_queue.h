@@ -87,13 +87,8 @@ void print_queue(struct req_queue *queue) {
 // Based on:
 // https://www.codeproject.com/Articles/43510/Lock-Free-Single-Producer-Single-Consumer-Circular#heading_acquire_release_model
 
-struct app_req_info {
-    struct app_event event;
-    struct pkt_info p_info;
-};
-
 struct req_queue_v2 {
-    struct app_req_info req_queue[MAX_NUMBER_PROG_EVENTS];
+    struct app_event req_queue[MAX_NUMBER_PROG_EVENTS];
     atomic_uint head;
     atomic_uint tail;
 };
@@ -105,11 +100,11 @@ void init_queue_v2(struct req_queue_v2 *queue) {
     }
 }
 
-void req_enqueue_v2(struct req_queue_v2 *queue, struct app_req_info req_info) {
+void req_enqueue_v2(struct req_queue_v2 *queue, struct app_event event) {
     atomic_uint curr_tail = atomic_load_explicit(&queue->tail, memory_order_relaxed);
     atomic_uint next_tail = (curr_tail + 1) % MAX_NUMBER_PROG_EVENTS;
     if(next_tail != atomic_load_explicit(&queue->head, memory_order_acquire)) {
-        queue->req_queue[curr_tail] = req_info;
+        queue->req_queue[curr_tail] = event;
         atomic_store_explicit(&queue->tail, next_tail, memory_order_release);
         return;
     }
@@ -128,7 +123,7 @@ void req_dequeue_v2(struct req_queue_v2 *queue) {
     return;
 }
 
-struct app_req_info * read_first_req_v2(struct req_queue_v2 *queue, atomic_uint *curr_head) {
+struct app_event * read_first_req_v2(struct req_queue_v2 *queue, atomic_uint *curr_head) {
     *curr_head = atomic_load_explicit(&queue->head, memory_order_relaxed);
     if(*curr_head != atomic_load_explicit(&queue->tail, memory_order_acquire)) {
         return &queue->req_queue[*curr_head];
@@ -141,7 +136,7 @@ void print_queue_v2(struct req_queue_v2 *queue) {
         atomic_uint curr_head = atomic_load_explicit(&queue[i].head, memory_order_relaxed);
         printf("\nCPU %d: ", i);
         while(curr_head != atomic_load_explicit(&queue[i].tail, memory_order_relaxed)) {
-            printf("%lld ", queue[i].req_queue[curr_head].event.value);
+            printf("%lld ", queue[i].req_queue[curr_head].value);
             curr_head = (curr_head + 1) % MAX_NUMBER_PROG_EVENTS;
         }
     }

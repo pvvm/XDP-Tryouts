@@ -26,7 +26,7 @@ void create_eth_header(struct ethhdr *eth_hdr,  __u8 src_mac[], __u8 dst_mac[]) 
     memcpy(eth_hdr->h_dest, dst_mac, ETH_ALEN);
 }
 
-void create_ip_header(struct iphdr *ip_hdr, __be32 src_ip, __be32 dst_ip) {
+void create_ip_header(struct iphdr *ip_hdr, __be32 src_ip, __be32 dst_ip, int *ip_id) {
     memset(ip_hdr, 0, sizeof(struct iphdr));
     ip_hdr->version = 4;
     ip_hdr->ihl = 5;
@@ -36,6 +36,8 @@ void create_ip_header(struct iphdr *ip_hdr, __be32 src_ip, __be32 dst_ip) {
     //ip_hdr->daddr = inet_addr("10.7.0.8");
     ip_hdr->saddr = src_ip;
     ip_hdr->daddr = dst_ip;
+    if(ip_id)
+        ip_hdr->id = *ip_id;
 }
 
 void create_tcp_header(struct tcphdr *tcp_hdr, __be16 src_port, __be16 dst_port) {
@@ -49,12 +51,12 @@ void create_tcp_header(struct tcphdr *tcp_hdr, __be16 src_port, __be16 dst_port)
     tcp_hdr->doff = 5;
 }
 
-void create_packet(unsigned char *data, size_t *data_len, struct pkt_info p_info) {
+void create_packet(unsigned char *data, size_t *data_len, struct pkt_info p_info, int *ip_id) {
     struct ethhdr eth_hdr;
     struct iphdr ip_hdr;
     struct tcphdr tcp_hdr;
     create_eth_header(&eth_hdr, p_info.src_mac, p_info.dst_mac);
-    create_ip_header(&ip_hdr, p_info.src_ip, p_info.dst_ip);
+    create_ip_header(&ip_hdr, p_info.src_ip, p_info.dst_ip, ip_id);
     create_tcp_header(&tcp_hdr, p_info.src_port, p_info.dst_port);
 
     size_t offset = 0;
@@ -126,7 +128,8 @@ struct pkt_info temporary_default_info_rcv() {
 struct flow_id convert_pktinfo_to_flow_id(struct pkt_info p_info) {
     struct flow_id f_id;
 
-    __be32 saddr = p_info.dst_ip; 
+    //__be32 saddr = p_info.dst_ip; 
+    __be32 saddr = p_info.src_ip; 
     __u8 src_ip;
     src_ip = saddr & 0xFF;
     src_ip = ((saddr >> 8) & 0xFF) ^ src_ip;
@@ -134,7 +137,8 @@ struct flow_id convert_pktinfo_to_flow_id(struct pkt_info p_info) {
     src_ip = ((saddr >> 24) & 0xFF) ^ src_ip;
 	f_id.src_ip = src_ip;
 
-	__be32 daddr = p_info.src_ip;
+	//__be32 daddr = p_info.src_ip;
+    __be32 daddr = p_info.dst_ip;
     __u8 dst_ip;
     dst_ip = daddr & 0xFF;
     dst_ip = ((daddr >> 8) & 0xFF) ^ dst_ip;
@@ -142,13 +146,15 @@ struct flow_id convert_pktinfo_to_flow_id(struct pkt_info p_info) {
     dst_ip = ((daddr >> 24) & 0xFF) ^ dst_ip;
 	f_id.dest_ip = dst_ip;
 
-	__be16 sport = ntohs(p_info.dst_port);
+	//__be16 sport = ntohs(p_info.dst_port);
+    __be16 sport = ntohs(p_info.src_port);
 	__u8 src_port;
     src_port = sport & 0xFF;
     src_port = ((sport >> 8) & 0xFF) ^ src_port;
 	f_id.src_port = src_port;
 
-	__be16 dport = ntohs(p_info.src_port);
+	//__be16 dport = ntohs(p_info.src_port);
+    __be16 dport = ntohs(p_info.dst_port);
 	__u8 dst_port;
     dst_port = dport & 0xFF;
     dst_port = ((dport >> 8) & 0xFF) ^ dst_port;

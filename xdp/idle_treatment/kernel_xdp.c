@@ -158,7 +158,7 @@ static __always_inline void define_minor_type(struct net_event *net_ev) {
 }
 
 // TODO: implement the hash map
-static __always_inline int parse_packet(void *data, void *data_end,
+static __always_inline __u8 parse_packet(void *data, void *data_end,
     struct net_event *net_ev, struct metadata_hdr *meta_hdr) {
     
     struct ethhdr *eth;
@@ -215,8 +215,8 @@ static __always_inline int parse_packet(void *data, void *data_end,
     dst_port = ((dport >> 8) & 0xFF) ^ dst_port;
     net_ev->ev_flow_id.dest_port = dst_port;
 
-    bpf_printk("%d %d", net_ev->ev_flow_id.src_ip, net_ev->ev_flow_id.dest_ip);
-    bpf_printk("%d %d", net_ev->ev_flow_id.src_port, net_ev->ev_flow_id.dest_port);
+    //bpf_printk("%d %d", net_ev->ev_flow_id.src_ip, net_ev->ev_flow_id.dest_ip);
+    //bpf_printk("%d %d", net_ev->ev_flow_id.src_port, net_ev->ev_flow_id.dest_port);
 
     define_minor_type(net_ev);
 
@@ -227,10 +227,14 @@ static __always_inline int parse_packet(void *data, void *data_end,
     meta_hdr->src_port = tcph->source;
     meta_hdr->dst_port = tcph->dest;
 
+    // Note: identifies if it is a bpf_prog_run packet via IP header ID
+    if(iphdr->id == 65535)
+        return 2;
+
     return 1;
 }
 
-static __always_inline int mutate_pkt(struct xdp_md *redirect_pkt, struct net_event *net_ev) {
+static __always_inline __u8 mutate_pkt(struct xdp_md *redirect_pkt, struct net_event *net_ev) {
 
     void *data_end = (void *)(long)redirect_pkt->data_end;
     void *data     = (void *)(long)redirect_pkt->data;
@@ -244,7 +248,8 @@ static __always_inline int mutate_pkt(struct xdp_md *redirect_pkt, struct net_ev
     struct metadata_hdr new_hdr;
     new_hdr.data_len = pkt_len - original_header_len;
 
-    if(!parse_packet(data, data_end, net_ev, &new_hdr))
+    __u8 ret = parse_packet(data, data_end, net_ev, &new_hdr);
+    if(!ret)
         return 0;
 
     bpf_xdp_adjust_head(redirect_pkt, original_header_len - new_header_len);
@@ -262,7 +267,7 @@ static __always_inline int mutate_pkt(struct xdp_md *redirect_pkt, struct net_ev
 
     bpf_xdp_adjust_tail(redirect_pkt, 2000);
 
-    return 1;
+    return ret;
 }
 
 static __always_inline struct context * retrieve_ctx(struct flow_id flow) {
@@ -832,7 +837,8 @@ static __always_inline int net_ev_process(struct xdp_md *redirect_pkt, struct fl
 
     struct net_event net_ev;
 
-    if(!mutate_pkt(redirect_pkt, &net_ev))
+    __u8 ret = mutate_pkt(redirect_pkt, &net_ev);
+    if(!ret)
         return 0;
 
     *f_id = net_ev.ev_flow_id;
@@ -842,7 +848,8 @@ static __always_inline int net_ev_process(struct xdp_md *redirect_pkt, struct fl
         return 0;
     }
 
-    dispatcher(&net_ev, net_ev.event_type, *flow_context, redirect_pkt);
+    if(ret == 1)
+        dispatcher(&net_ev, net_ev.event_type, *flow_context, redirect_pkt);
 
     return 1;
 }

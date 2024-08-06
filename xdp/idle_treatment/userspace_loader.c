@@ -45,7 +45,7 @@
 #define INVALID_UMEM_FRAME 	UINT64_MAX
 
 #define NUMBER_MOM			3
-#define IDLE_TIME			10000000000L
+#define IDLE_TIME			15000000000L
 
 static const char *default_filename = "kernel_xdp.o";
 
@@ -59,6 +59,8 @@ bool custom_xsk = false;
 
 //struct req_queue *cpu_req_queues;
 struct req_queue_v2 cpu_req_queues_v2[MAX_NUMBER_CORES];
+
+pthread_mutex_t worker_lock[MAX_NUMBER_CORES];
 
 struct config cfg = {
 	.ifindex   = -1,
@@ -100,7 +102,12 @@ struct worker_argument {
 	struct xsk_socket_info *xsk_socket;
 	int prod_map_fd;
 	int tail_map_fd;
-	int flow_info_map_fd;
+};
+
+struct idle_checker_argument {
+	struct xsk_socket_info *xsk_socket;
+	int flow_info_fd;
+	int tail_map_fd;
 };
 
 struct mom_map_info {
@@ -381,7 +388,7 @@ static bool submit_multiple_pkts(struct xsk_socket_info *xsk, struct metadata_hd
 
 		unsigned char pkt[1500];
 		size_t data_len = 0;
-		create_packet(pkt, &data_len, p_info);
+		create_packet(pkt, &data_len, p_info, NULL);
 
 		memcpy(area_mem[i], pkt, data_len);
 
@@ -398,10 +405,7 @@ static bool submit_multiple_pkts(struct xsk_socket_info *xsk, struct metadata_hd
 	return true;
 }
 
-static bool process_packet(struct xsk_socket_info *xsk,
-			   uint64_t addr, uint32_t len)
-{
-	uint8_t *pkt = xsk_umem__get_data(xsk->umem->buffer, addr);
+static bool process_packet(uint8_t *pkt, struct xsk_socket_info *xsk) {
 
 	if (pkt) {
 		struct metadata_hdr *meta_hdr = (struct metadata_hdr *) pkt;
@@ -488,6 +492,7 @@ static void handle_receive_packets(struct xsk_socket_info *xsk)
 		xsk_ring_prod__submit(&xsk->umem->fq, stock_frames);
 	}
 
+	pthread_mutex_lock(&worker_lock[xsk->cpu_id]);
 	/* Process received packets */
 	for (i = 0; i < rcvd; i++) {
 		/* Gets information about an entry of the RX ring */
@@ -495,7 +500,8 @@ static void handle_receive_packets(struct xsk_socket_info *xsk)
 		uint32_t len = xsk_ring_cons__rx_desc(&xsk->rx, idx_rx++)->len;
 		//printf("RX ADDRESS: %ld\n", addr);
 
-		if (!process_packet(xsk, addr, len))
+		uint8_t *pkt = xsk_umem__get_data(xsk->umem->buffer, addr);
+		if (!process_packet(pkt, xsk))
 			xsk_free_umem_frame(xsk, addr);
 
 		xsk->stats.rx_bytes += len;
@@ -506,6 +512,8 @@ static void handle_receive_packets(struct xsk_socket_info *xsk)
 
 	/* Do we need to wake up the kernel for transmission */
 	complete_tx(xsk);
+
+	pthread_mutex_unlock(&worker_lock[xsk->cpu_id]);
 }
 
 static void send_packet_directly(struct xsk_socket_info *xsk) {
@@ -513,11 +521,12 @@ static void send_packet_directly(struct xsk_socket_info *xsk) {
     size_t data_len = 0;
     
     struct pkt_info p_info = temporary_default_info_send();
-    create_packet(pkt, &data_len, p_info);
+    create_packet(pkt, &data_len, p_info, NULL);
 	//printf("\n%lu", data_len);
 
 	uint32_t tx_idx = 0;
 
+	pthread_mutex_lock(&worker_lock[xsk->cpu_id]);
 	__u64 frame_address = xsk_alloc_umem_frame(xsk);
 	//printf("CPU: %d, Address: %llu\n", sched_getcpu(), frame_address);
 	uint8_t *area_mem = xsk_umem__get_data(xsk->umem->buffer, frame_address);
@@ -542,9 +551,10 @@ static void send_packet_directly(struct xsk_socket_info *xsk) {
 	xsk->stats.tx_packets++;
 
 	complete_tx(xsk);
+	pthread_mutex_unlock(&worker_lock[xsk->cpu_id]);
 }
 
-void produce_app_events(int cpu_id, int outer_map_fd, int tail_map_fd, int flow_info_fd,
+void produce_app_events(int cpu_id, int outer_map_fd, int tail_map_fd,
 	int *inner_index, atomic_uint * last_head) {
 
 	int inner_id, inner_fd, err;
@@ -557,13 +567,16 @@ void produce_app_events(int cpu_id, int outer_map_fd, int tail_map_fd, int flow_
 
 	//struct app_event* new_entry = read_first_req(cpu_req_queues, cpu_id);
 	atomic_uint curr_head;
-	struct app_req_info* req_info = read_first_req_v2(&cpu_req_queues_v2[cpu_id], &curr_head);
-	struct app_event* new_entry = &req_info->event;
+	//struct app_req_info* req_info = read_first_req_v2(&cpu_req_queues_v2[cpu_id], &curr_head);
+	//struct app_event* new_entry = &req_info->event;
+	struct app_event* new_entry = read_first_req_v2(&cpu_req_queues_v2[cpu_id], &curr_head);
 	if(new_entry == NULL/* || curr_head == *last_head*/)
 		return;
 
+	// Question: where should we add new entries? In the main thread, when a flow is established,
+	// or here in the worker thread?
 	// Add new entry to idle flow info
-	if(!find_idle_flow_info(cpu_id, req_info->event.ev_flow_id)) {
+	/*if(!find_idle_flow_info(cpu_id, req_info->event.ev_flow_id)) {
 		struct queue_flow_info f_info;
 		err = bpf_map_lookup_elem(flow_info_fd, &new_entry->ev_flow_id, &f_info);
 		if(err < 0) {
@@ -571,7 +584,7 @@ void produce_app_events(int cpu_id, int outer_map_fd, int tail_map_fd, int flow_
 			return;
 		}
 		add_idle_flow_info(cpu_id, *req_info, f_info);
-	}
+	}*/
 
 	*last_head = curr_head;
 
@@ -643,7 +656,6 @@ void * producer_and_afxdp(void *arg) {
 	struct xsk_socket_info *xsk_socket = info->xsk_socket;
 	int prod_map_fd = info->prod_map_fd;
 	int tail_map_fd = info->tail_map_fd;
-	int flow_info_fd = info->flow_info_map_fd;
 
 	struct pollfd fds[2];
 	int ret, nfds = 1;
@@ -657,7 +669,7 @@ void * producer_and_afxdp(void *arg) {
 	
 	atomic_uint last_head = 99999999;
 	while(!global_exit) {
-		produce_app_events(xsk_socket->cpu_id, prod_map_fd, tail_map_fd, flow_info_fd, &inner_index, &last_head);
+		produce_app_events(xsk_socket->cpu_id, prod_map_fd, tail_map_fd, &inner_index, &last_head);
 
 		if (cfg->xsk_poll_mode) {
 			ret = poll(fds, nfds, -1);
@@ -675,14 +687,50 @@ void * producer_and_afxdp(void *arg) {
 	pthread_exit(NULL);
 }
 
+void trigger_idle_flow(struct pkt_info p_info, struct xsk_socket_info *xsk) {
+	unsigned char data[1500];
+	unsigned char buf[5000];
+	size_t data_len = 0;
+
+	// Note: I'm setting this value to represent a fake packet
+	int ip_id = 65535;
+	create_packet(data, &data_len, p_info, &ip_id);
+	//struct iphdr *ip_hdr = (struct iphdr *) data + sizeof(struct ethhdr);
+
+	LIBBPF_OPTS(bpf_test_run_opts, opts);
+	opts.data_in = data;
+	opts.data_out = buf;
+	opts.data_size_in = data_len;
+	opts.data_size_out = 5000;
+	opts.flags = 0;
+
+	int err = xdp_program__test_run(prog, &opts, 0);
+	if (err != 0) {
+		printf("[error]: bpf test run failed: %d\n", err);
+	}
+	//struct metadata_hdr *meta_hdr = (struct metadata_hdr *) buf;
+	//struct metadata_hdr meta_hdr;
+	//memcpy(&meta_hdr, buf, sizeof(meta_hdr));
+
+	pthread_mutex_lock(&worker_lock[xsk->cpu_id]);
+	process_packet(buf, xsk);
+	complete_tx(xsk);
+	pthread_mutex_unlock(&worker_lock[xsk->cpu_id]);
+}
+
 void * idle_checker(void *arg) {
-	int *flow_info_fd = (int *) arg;
+	struct idle_checker_argument *info = (struct idle_checker_argument *) arg;
+	int tail_map_fd = info->tail_map_fd;
+	int flow_info_fd = info->flow_info_fd;
+	struct xsk_socket_info *xsk_socket = info->xsk_socket;
+
 	struct timespec curr_time;
 	long ns_time;
 	int num_flows, err;
 	struct flow_id f_id;
 	int cpu_id = sched_getcpu();
 	struct queue_flow_info curr_f_info, old_f_info;
+	__u32 curr_queue_tail;
 
 
 	while(!global_exit) {
@@ -694,47 +742,58 @@ void * idle_checker(void *arg) {
 			clock_gettime(CLOCK_MONOTONIC, &curr_time);
 			ns_time = curr_time.tv_sec * 1000000000L + curr_time.tv_nsec;
 
-			printf("%ld\n", ns_time - idle_flow_array[0][i].last_time);
-			if(ns_time - idle_flow_array[0][i].last_time > 10000000000L) {
-				err = bpf_map_lookup_elem(*flow_info_fd, &f_id, &curr_f_info);
+			//printf("%ld\n", ns_time - idle_flow_array[cpu_id][i].last_time);
+			if(ns_time - idle_flow_array[cpu_id][i].last_time > IDLE_TIME) {
+				
+				err = bpf_map_lookup_elem(flow_info_fd, &f_id, &curr_f_info);
 				if(err < 0) {
 					printf("Couldn't find entry from queue flow info map\n");
 					break;
 				}
-				if(cmp_queue_flow_info(curr_f_info, old_f_info)) {
-					idle_flow_array[cpu_id][i].q_flow_info = curr_f_info;
-					unsigned char data[1500];
-					unsigned char buf[5000];
-					size_t data_len = 0;
 				
-					struct pkt_info p_info = temporary_default_info_rcv();
-					create_packet(data, &data_len, p_info);
-					struct iphdr *ip_hdr = (struct iphdr *) data + sizeof(struct ethhdr);
-					// Note: I'm setting this temporary value to represent a fake packet
-					ip_hdr->id = 65535;
-
-					LIBBPF_OPTS(bpf_test_run_opts, opts);
-					opts.data_in = data;
-					opts.data_out = buf;
-					opts.data_size_in = data_len;
-					opts.data_size_out = 5000;
-					opts.flags = 0;
-
-					int err = xdp_program__test_run(prog, &opts, 0);
-					if (err != 0) {
-						printf("[error]: bpf test run failed: %d\n", err);
-					}
-					//struct metadata_hdr *meta_hdr = (struct metadata_hdr *) buf;
-					struct metadata_hdr meta_hdr;
-					memcpy(&meta_hdr, buf, sizeof(meta_hdr));
-					printf("%d %d\n", meta_hdr.data_len, meta_hdr.metadata_end);
+				//struct timespec test, test1;
+				//clock_gettime(CLOCK_MONOTONIC, &test);
+				err = bpf_map_lookup_elem(tail_map_fd, &f_id, &curr_queue_tail);
+				if(err < 0) {
+					printf("Couldn't find entry from queue flow info map\n");
+					break;
 				}
-				idle_flow_array[0][i].last_time = ns_time;
+				//clock_gettime(CLOCK_MONOTONIC, &test1);
+				//printf("Lookup %ld\n", (test1.tv_sec * 1000000000L + test1.tv_nsec)-(test.tv_sec * 1000000000L + test.tv_nsec));
+
+				//clock_gettime(CLOCK_MONOTONIC, &test);
+				if(!empty_queues(curr_f_info, curr_queue_tail) && cmp_queue_flow_info(curr_f_info, old_f_info)) {
+					trigger_idle_flow(idle_flow_array[cpu_id][i].p_info, xsk_socket);
+				}
+				//clock_gettime(CLOCK_MONOTONIC, &test1);
+				//printf("BPF_PROG_RUN %ld\n", (test1.tv_sec * 1000000000L + test1.tv_nsec)-(test.tv_sec * 1000000000L + test.tv_nsec));
+
+				idle_flow_array[cpu_id][i].last_time = ns_time;
+
+				// Question: should we automatically update the last flow info right after
+				// possibly changing the flow info?
+				err = bpf_map_lookup_elem(flow_info_fd, &f_id, &curr_f_info);
+				if(err < 0) {
+					printf("Couldn't find entry from queue flow info map\n");
+					break;
+				}
+				idle_flow_array[cpu_id][i].q_flow_info = curr_f_info;
 			}
 		}
 		sleep(1);
 	}
+	free(info);
 	pthread_exit(NULL);
+}
+
+int set_initial_app_queue_tail(struct flow_id f_id, int app_queue_tail_fd) {
+	__u32 tail = 0;
+	int err = bpf_map_update_elem(app_queue_tail_fd, &f_id, &tail, BPF_ANY);
+	if(err < 0) {
+		printf("Error while updating app queue tail entry %d", err);
+		return 0;
+	}
+	return 1;
 }
 
 int set_initial_ctx_values(struct flow_id f_id, int context_fd) {
@@ -747,13 +806,15 @@ int set_initial_ctx_values(struct flow_id f_id, int context_fd) {
 	return 1;
 }
 
-int set_initial_queue_flow_info(struct flow_id f_id, int flow_info_fd) {
+int set_initial_queue_flow_info(struct flow_id f_id, struct pkt_info p_info, int flow_info_fd, int cpu_id) {
 	struct queue_flow_info new_flow_info = {{0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0}};
 	int err = bpf_map_update_elem(flow_info_fd, &f_id, &new_flow_info, BPF_ANY);
 	if(err < 0) {
 		printf("Error while updating queue flow info entry %d", err);
 		return 0;
 	}
+	// Adds entry to idle flow information array
+	add_idle_flow_info(cpu_id, p_info, f_id, new_flow_info);
 	return 1;
 }
 
@@ -778,22 +839,29 @@ int set_mom_flow_entry(struct flow_id f_id, int *map_fds) {
 	return 1;
 }
 
-void distribute_requests(int *map_fds, int context_fd, int flow_info_fd) {
-	//cpu_req_queues = create_queue();
-	struct pkt_info p_info = temporary_default_info_send();
+void distribute_requests(int *map_fds, int context_fd, int flow_info_fd, int tail_map_fd) {
+
+	struct pkt_info p_info = temporary_default_info_rcv();
 	struct flow_id f_id = convert_pktinfo_to_flow_id(p_info);
+	init_idle_flow_array();
+	//printf("%d %d %d %d\n", f_id.src_ip, f_id.dest_ip, f_id.src_port, f_id.dest_port);
+
+	// Initialize maps and arrays of a flow
 	if(!set_mom_flow_entry(f_id, map_fds))
 		return;
 	if(!set_initial_ctx_values(f_id, context_fd))
 		return;
-	if(!set_initial_queue_flow_info(f_id, flow_info_fd))
+	// Note: at the moment I'm always setting the idle flow info to CPU 0 array,
+	// but we'll vary when we are able to know to which CPU a flow should go
+	if(!set_initial_queue_flow_info(f_id, p_info, flow_info_fd, 0))
+		return;
+	if(!set_initial_app_queue_tail(f_id, tail_map_fd))
 		return;
 
 	init_queue_v2(cpu_req_queues_v2);
-	init_idle_flow_array();
+
 	// Note: at this moment the flow_id is fixed to this one
 	struct app_event event = {SEND, f_id, 1, 0};
-	struct app_req_info req_info = {event, p_info};
 	int cpu_to_send = 0;
 	while(1) {
 		if(!scanf("%d", &cpu_to_send))
@@ -802,7 +870,7 @@ void distribute_requests(int *map_fds, int context_fd, int flow_info_fd) {
 			break;
 
 		//req_enqueue(cpu_req_queues, event, cpu_to_send);
-		req_enqueue_v2(&cpu_req_queues_v2[cpu_to_send], req_info);
+		req_enqueue_v2(&cpu_req_queues_v2[cpu_to_send], event);
 		//print_queue(cpu_req_queues);
 		print_queue_v2(cpu_req_queues_v2);
 	}
@@ -1001,7 +1069,12 @@ int main(int argc, char **argv)
 		}*/
 	}
 
-	
+	for(int i = 0; i < MAX_NUMBER_CORES; i++) {
+		if (pthread_mutex_init(&worker_lock[i], NULL) != 0) {
+        	printf("Lock initialization failed\n");
+        	return 1;
+    	}
+	}
 
 	int maps_fd[4];
 	int tail_app_map_fd, context_fd, f_info_fd;
@@ -1017,34 +1090,30 @@ int main(int argc, char **argv)
 		arg->xsk_socket = xsk_socket[i];
 		arg->prod_map_fd = maps_fd[0];
 		arg->tail_map_fd = tail_app_map_fd;
-		arg->flow_info_map_fd = f_info_fd;
 		CPU_SET(i, &cpuset);
-		/* Receive and count packets than drop them */
 		pthread_create(&threads[i], NULL, producer_and_afxdp, (void *) arg);
 		pthread_setaffinity_np(threads[i], sizeof(cpu_set_t), &cpuset);
-		//rx_and_process(&cfg, xsk_socket[0]);
 		CPU_ZERO(&cpuset);
 	}
 
 	if(!global_exit) {
 		CPU_ZERO(&cpuset);
 		for(int i = 0; i < MAX_NUMBER_CORES; i++) {
+			struct idle_checker_argument *arg = malloc(sizeof(struct idle_checker_argument));
+			arg->tail_map_fd = tail_app_map_fd;
+			arg->flow_info_fd = f_info_fd;
+			arg->xsk_socket = xsk_socket[i];
 			CPU_SET(i, &cpuset);
-			/* Receive and count packets than drop them */
-			pthread_create(&threads[i], NULL, idle_checker, &f_info_fd);
+			pthread_create(&threads[i], NULL, idle_checker, (void *) arg);
 			pthread_setaffinity_np(threads[i], sizeof(cpu_set_t), &cpuset);
-			//rx_and_process(&cfg, xsk_socket[0]);
 			CPU_ZERO(&cpuset);
 		}
-		distribute_requests(maps_fd, context_fd, f_info_fd);
+		distribute_requests(maps_fd, context_fd, f_info_fd, tail_app_map_fd);
 	}
 
 	for(int i = 0; i < MAX_NUMBER_CORES; i++) {
 		pthread_join(threads[i], NULL);
-	}
-
-	/* Cleanup */
-	for(int i = 0; i < MAX_NUMBER_CORES; i++) {
+		pthread_mutex_destroy(&worker_lock[i]);
 		xsk_socket__delete(xsk_socket[i]->xsk);
 		xsk_umem__delete(umem[i]->umem);
 	}

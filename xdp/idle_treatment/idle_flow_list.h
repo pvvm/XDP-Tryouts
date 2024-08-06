@@ -45,9 +45,9 @@ int find_idle_flow_info(int cpu_id, struct flow_id f_id) {
     return 0;
 }
 
-void add_idle_flow_info(int cpu_id, struct app_req_info req_info, struct queue_flow_info f_info) {
+void add_idle_flow_info(int cpu_id, struct pkt_info p_info, struct flow_id f_id, struct queue_flow_info f_info) {
     int array_num = num_idle_flow_array[cpu_id];
-    printf("%d", array_num);
+    //printf("%d", array_num);
 
     if(array_num >= MAX_NUMBER_FLOWS) {
         printf("Reached the limit of idle flow info for core %d\n", cpu_id);
@@ -58,8 +58,8 @@ void add_idle_flow_info(int cpu_id, struct app_req_info req_info, struct queue_f
     struct timespec curr_time;
     clock_gettime(CLOCK_MONOTONIC, &curr_time);
 
-    idle_flow_array[cpu_id][array_num].f_id = req_info.event.ev_flow_id;
-    idle_flow_array[cpu_id][array_num].p_info = req_info.p_info;
+    idle_flow_array[cpu_id][array_num].f_id = f_id;
+    idle_flow_array[cpu_id][array_num].p_info = p_info;
     idle_flow_array[cpu_id][array_num].q_flow_info = f_info;
     idle_flow_array[cpu_id][array_num].last_time = curr_time.tv_sec * 1000000000L + curr_time.tv_nsec;
 
@@ -67,7 +67,18 @@ void add_idle_flow_info(int cpu_id, struct app_req_info req_info, struct queue_f
     num_idle_flow_array[cpu_id] = array_num;
 }
 
+int empty_queues(struct queue_flow_info f_info, __u32 app_queue_tail) {
+    if(f_info.app_info.app_head != app_queue_tail ||
+    f_info.timer_info.len_timer_queue != 0 ||
+    f_info.prog_info.len_prog_queue != 0)
+        return 0;
+    return 1;
+}
+
 int cmp_queue_flow_info(struct queue_flow_info curr_f_info, struct queue_flow_info old_f_info) {
+    /*printf("%d %d %d\n%d %d %d\n", curr_f_info.app_info.app_head, curr_f_info.timer_info.timer_head, 
+    curr_f_info.prog_info.prog_head, old_f_info.app_info.app_head, old_f_info.timer_info.timer_head,
+    old_f_info.prog_info.prog_head);*/
     if(curr_f_info.app_info.app_head == old_f_info.app_info.app_head &&
     curr_f_info.timer_info.timer_head == old_f_info.timer_info.timer_head &&
     curr_f_info.prog_info.prog_head == old_f_info.prog_info.prog_head)
