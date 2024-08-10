@@ -793,7 +793,7 @@ static __always_inline void app_event_processor(struct app_event *event, struct 
     struct intermediate_output *inter_output) {
     struct flow_id fid = event->ev_flow_id;
     // Update size of data to send
-    ctx->data_end += event->data_end;
+    ctx->data_end += event->data_size;
     // Update window:
     int data_rest = ctx->data_end - (ctx->last_seq_sent + 1);
     int window_empty_spots = WINDOW_SIZE - (ctx->last_seq_sent - ctx->window_start_seq + 1);
@@ -852,7 +852,9 @@ static __always_inline void timer_event_processor(struct timer_event *event, str
     struct intermediate_output *inter_output) {
     // Resend packet
     if(ctx->window_start_seq == event->seq_num) {
-        pe.fid = event->ev_flow_id;
+        struct packet_event pe;
+        __builtin_memset(&pe, 0, sizeof(pe));
+        pe.fid = &event->ev_flow_id;
         pe.size = ctx->segment_size;
         pe.seq_num = ctx->window_start_seq;
         send_packet(&pe);
@@ -864,7 +866,7 @@ static __always_inline void timer_event_processor(struct timer_event *event, str
 static __always_inline struct context * retrieve_ctx(struct flow_id flow) {
     struct context *ctx = bpf_map_lookup_elem(&context_hash, &flow);
     if(!ctx) {
-        struct context new_ctx = {1, 5, 0, -1, 0, 0, 0};
+        struct context new_ctx = {1, 5, 0, -1, 0};
         bpf_map_update_elem(&context_hash, &flow, &new_ctx, BPF_NOEXIST);
         ctx = bpf_map_lookup_elem(&context_hash, &flow);
         if(!ctx) {
@@ -975,7 +977,7 @@ static long ev_process_loop(__u32 index, struct sched_loop_args * arg) {
         new_ev.ev_flow_id = app_ev->ev_flow_id;
         new_ev.event_type = app_ev->event_type;
         new_ev.occupied = app_ev->occupied;
-        new_ev.data_end = app_ev->data_end;
+        new_ev.data_size = app_ev->data_size;
         // Set occupied bit to 0
         __sync_fetch_and_xor(&app_ev->occupied, 1);
         dispatcher(&new_ev, minor_type, arg->ctx);
