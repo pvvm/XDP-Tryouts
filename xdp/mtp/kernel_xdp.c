@@ -751,10 +751,10 @@ static __always_inline int initialize_timer(struct timer_event event,
         return -1;
     }
 
-    if(map_entry->triggered) {
-        bpf_printk("initialize_timer: timer already triggered");
-        return -1;
-    }
+    // if(map_entry->triggered) {
+    //     bpf_printk("initialize_timer: timer already triggered");
+    //     return -1;
+    // }
 
     map_entry->t_event = event;
     map_entry->triggered = 1;
@@ -780,63 +780,60 @@ static __always_inline int send_packet(struct packet_event *pe) {
     return 1;
 }
 
-static __always_inline int window_enque(struct packet_event *pe, struct flow_id *fid) {
-    struct context *tcp_ctx = bpf_map_lookup_elem(&context_hash, fid);
-    if(!tcp_ctx) {
-        bpf_printk("tcp_ctx does not exist with the fid");
-        return 0;
-    }
+static __always_inline int window_enque(struct packet_event *pe, struct context *ctx) {
+    // struct context *tcp_ctx = bpf_map_lookup_elem(&context_hash, fid);
+    // if(!tcp_ctx) {
+    //     bpf_printk("tcp_ctx does not exist with the fid");
+    //     return 0;
+    // }
     // Check if the window is full
-    if(tcp_ctx->cur_size == tcp_ctx->window_size) {
+    if(ctx->cur_size == ctx->window_size) {
         bpf_printk("The window is full, the packet cannot be added");
         return 0;
     }
     // Add the packet
     send_packet(pe);
-    __u32 key = (tcp_ctx->head + tcp_ctx->cur_size) % tcp_ctx->window_size;
+    __u32 key = (ctx->head + ctx->cur_size) % ctx->window_size;
     bpf_map_update_elem(&window_packets, &key, pe, BPF_ANY);
-    tcp_ctx->cur_size += 1;
-    bpf_map_update_elem(&context_hash, fid, tcp_ctx, BPF_ANY);
+    ctx->cur_size += 1;
     return 1;
 }
 
-static __always_inline int window_deque(struct flow_id *fid) {
-    struct context *tcp_ctx = bpf_map_lookup_elem(&context_hash, fid);
-    if(!tcp_ctx) {
-        bpf_printk("tcp_ctx does not exist with the fid");
-        return 0;
-    }
+static __always_inline int window_deque(struct context *ctx) {
+    // struct context *tcp_ctx = bpf_map_lookup_elem(&context_hash, fid);
+    // if(!tcp_ctx) {
+    //     bpf_printk("tcp_ctx does not exist with the fid");
+    //     return 0;
+    // }
     // Check if the window is empty
-    if(tcp_ctx->cur_size == 0) {
+    if(ctx->cur_size == 0) {
         bpf_printk("The window is empty, no packet can be removed");
         return 0;
     }
     // Remove the packet
-    struct packet_event *pe = bpf_map_lookup_elem(&window_packets, &tcp_ctx->head);
+    struct packet_event *pe = bpf_map_lookup_elem(&window_packets, &ctx->head);
     if(!pe) {
         bpf_printk("The remove packet does not exist");
         return 0;
     }
-    tcp_ctx->head = (tcp_ctx->head + 1) % tcp_ctx->window_size;
-    tcp_ctx->cur_size -= 1;
-    bpf_map_update_elem(&context_hash, fid, tcp_ctx, BPF_ANY);
+    ctx->head = (ctx->head + 1) % ctx->window_size;
+    ctx->cur_size -= 1;
     return 1;
 }
 
-static long app_event_send(__u32 index, struct flow_id *fid) {
-    struct context *tcp_ctx = bpf_map_lookup_elem(&context_hash, fid);
-    if(!tcp_ctx) {
-        bpf_printk("tcp_ctx does not exist with the fid\n");
-        return 0;
-    }
+static long app_event_send(__u32 index, struct loop_struct *s) {
+    // struct context *tcp_ctx = bpf_map_lookup_elem(&context_hash, fid);
+    // if(!tcp_ctx) {
+    //     bpf_printk("tcp_ctx does not exist with the fid\n");
+    //     return 0;
+    // }
     struct packet_event pe;
     __builtin_memset(&pe, 0, sizeof(pe));
-    pe.fid = fid;
-    pe.size =tcp_ctx->segment_size;
-    pe.seq_num = tcp_ctx->last_seq_sent + 1;
-    window_enque(&pe, fid);
-    tcp_ctx->last_seq_sent += 1;
-    bpf_map_update_elem(&context_hash, fid, tcp_ctx, BPF_ANY);
+    pe.fid = s->fid;
+    pe.size = s->ctx->segment_size;
+    pe.seq_num = s->ctx->last_seq_sent + 1;
+    window_enque(&pe, s->ctx);
+    s->ctx->last_seq_sent += 1;
     return 0;
 }
 
@@ -845,23 +842,16 @@ static __always_inline void app_event_processor(struct app_event *event, struct 
     struct flow_id fid = event->ev_flow_id;
     // Update size of data to send
     ctx->data_size += event->data_size;
-    bpf_printk("data_size: %u", ctx->data_size);
-    bpf_map_update_elem(&context_hash, &fid, ctx, BPF_ANY);
     // Update window:
     int data_rest = ctx->data_size - (ctx->last_seq_sent + 1);
     int window_empty_spots = WINDOW_SIZE - ctx->cur_size;
     int num_to_send = data_rest < window_empty_spots ? data_rest : window_empty_spots;
-    bpf_loop(num_to_send, app_event_send, &fid, 0);
+    struct loop_struct s;
+    __builtin_memset(&s, 0, sizeof(s));
+    s.fid = &fid;
+    s.ctx = ctx;
+    bpf_loop(num_to_send, app_event_send, &s, 0);
 
-    // Need this to make ther last update valid: Why?
-    struct context *tcp_ctx = bpf_map_lookup_elem(&context_hash, &fid);
-    if(!tcp_ctx) {
-        bpf_printk("tcp_ctx does not exist with the fid\n");
-        return;
-    }
-    bpf_map_update_elem(&context_hash, &fid, tcp_ctx, BPF_ANY);
-
-    // Create timer event and start timer:
     struct timer_event new_event;
     new_event.ev_flow_id = event->ev_flow_id;
     new_event.event_type = MISS_ACK;
@@ -869,24 +859,24 @@ static __always_inline void app_event_processor(struct app_event *event, struct 
     initialize_timer(new_event, TEN_SEC, EP_TIMER_TEST);
 }
 
-static long update_window(__u32 index, struct flow_id *fid) {
-    struct context *tcp_ctx = bpf_map_lookup_elem(&context_hash, fid);
-    if(!tcp_ctx) {
-        bpf_printk("tcp_ctx does not exist with the fid\n");
-        return 0;
-    }
-    window_deque(fid);
-    if(tcp_ctx->data_size == tcp_ctx->last_seq_sent + 1) {
+// New: Change *fid to *ctx
+static long update_window(__u32 index, struct loop_struct *s) {
+    // struct context *tcp_ctx = bpf_map_lookup_elem(&context_hash, fid);
+    // if(!tcp_ctx) {
+    //     bpf_printk("tcp_ctx does not exist with the fid\n");
+    //     return 0;
+    // }
+    window_deque(s->ctx);
+    if(s->ctx->data_size == s->ctx->last_seq_sent + 1) {
         return 0;
     }
     struct packet_event pe;
     __builtin_memset(&pe, 0, sizeof(pe));
-    pe.fid = fid;
-    pe.size =tcp_ctx->segment_size;
-    pe.seq_num = tcp_ctx->last_seq_sent + 1;
-    window_enque(&pe, fid);
-    tcp_ctx->last_seq_sent += 1;
-    bpf_map_update_elem(&context_hash, fid, tcp_ctx, BPF_ANY);
+    pe.fid = s->fid;
+    pe.size = s->ctx->segment_size;
+    pe.seq_num = s->ctx->last_seq_sent + 1;
+    window_enque(&pe, s->ctx);
+    s->ctx->last_seq_sent += 1;
     return 0;
 }
 
@@ -902,24 +892,33 @@ static __always_inline void net_event_processor(struct net_event *event, struct 
     }
     int num_to_send = event->ack_seq - ctx->window_start_seq;
     ctx->window_start_seq = event->ack_seq;
-    bpf_map_update_elem(&context_hash, &event->ev_flow_id, ctx, BPF_ANY);
     struct flow_id fid = event->ev_flow_id;
-    bpf_loop(num_to_send, update_window, &fid, 0);
+    struct loop_struct s;
+    __builtin_memset(&s, 0, sizeof(s));
+    s.fid = &fid;
+    s.ctx = ctx;
+    bpf_loop(num_to_send, update_window, &s, 0);
     //Placeholder for reset timer
-    enum timer_instances index = EP_TIMER_TEST;
-    struct flow_id key = {0, 0, 0, 0};
-    struct timer_trigger_inner_array * inner_map = bpf_map_lookup_elem(&timer_trigger_outer_hash, &key);
-    if(!inner_map) {
-        bpf_printk("restart_timer: Couldn't find outer map entry");
-        return;
-    }
-    struct timer_trigger *map_entry = bpf_map_lookup_elem(inner_map, &index);
-    if(!map_entry) {
-        bpf_printk("restart_timer: Couldn't find inner map entry");
-        return;
-    }
-    map_entry->t_event.seq_num = event->ack_seq;
-    restart_timer(event->ev_flow_id, TEN_SEC, EP_TIMER_TEST);
+    // enum timer_instances index = EP_TIMER_TEST;
+    // struct flow_id key = {0, 0, 0, 0};
+    // struct timer_trigger_inner_array * inner_map = bpf_map_lookup_elem(&timer_trigger_outer_hash, &key);
+    // if(!inner_map) {
+    //     bpf_printk("restart_timer: Couldn't find outer map entry");
+    //     return;
+    // }
+    // struct timer_trigger *map_entry = bpf_map_lookup_elem(inner_map, &index);
+    // if(!map_entry) {
+    //     bpf_printk("restart_timer: Couldn't find inner map entry");
+    //     return;
+    // }
+    // map_entry->t_event.seq_num = event->ack_seq;
+    // restart_timer(event->ev_flow_id, TEN_SEC, EP_TIMER_TEST);
+
+    struct timer_event new_event;
+    new_event.ev_flow_id = event->ev_flow_id;
+    new_event.event_type = MISS_ACK;
+    new_event.seq_num = ctx->window_start_seq;
+    initialize_timer(new_event, TEN_SEC, EP_TIMER_TEST);
 }
 
 static __always_inline void timer_event_processor(struct timer_event *event, struct context *ctx,

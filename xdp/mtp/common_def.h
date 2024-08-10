@@ -187,6 +187,7 @@ struct context {
     // The current size of the circular queue
     __u32 cur_size;
     // Unsent data size
+    // Rename to data_end
     __u32 data_size;
 };
 
@@ -202,6 +203,11 @@ struct sched_loop_args {
 
 struct timer_loop_args {
     __u32 index;
+};
+
+struct loop_struct {
+    struct flow_id *fid;
+    struct context *ctx;
 };
 
 struct test {
