@@ -182,13 +182,8 @@ struct context {
     // The last sequence number sent
     int last_seq_sent;
     // Circular queue(the actual window stores sent packets): 
-    // The head of the circular queue
-    __u32 head;
-    // The current size of the circular queue
-    __u32 cur_size;
     // Unsent data size
-    // Rename to data_end
-    __u32 data_size;
+    __u32 data_end;
 };
 
 struct intermediate_output {
