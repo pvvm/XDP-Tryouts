@@ -685,7 +685,7 @@ static __always_inline int initialize_timer(struct timer_event event,
     return 0;
 }
 
-static long gen_net_metadata(__u32 index, struct send_loop_args *arg) {
+static long send_n_packets(__u32 index, struct send_loop_args *arg) {
 
     int pkt_data_len;
     if(arg->bytes_to_send <= SMSS) {
@@ -748,7 +748,7 @@ static __always_inline void send_ep(struct app_event *event, struct context *ctx
     arg.bytes_to_send = bytes_to_send;
     arg.ctx = ctx;
     arg.redirect_pkt = redirect_pkt;
-    bpf_loop(num_loops, gen_net_metadata, &arg, 0);
+    bpf_loop(num_loops, send_n_packets, &arg, 0);
 
     struct timer_event new_event;
     new_event.ev_flow_id = event->ev_flow_id;
@@ -855,33 +855,6 @@ static __always_inline void rto_ep(struct net_event *event, struct context *ctx,
 
 }
 
-static long update_cwnd(__u32 index, struct ack_loop_args *arg) {
-
-    int pkt_data_len;
-    if(arg->bytes_to_send <= SMSS) {
-        pkt_data_len = arg->bytes_to_send;
-        arg->bytes_to_send = 0;
-    } else {
-        pkt_data_len = SMSS;
-        arg->bytes_to_send -= SMSS;
-    }
-
-    if((void *)(long)arg->redirect_pkt->data + sizeof(struct metadata_hdr) > (void *)(long)arg->redirect_pkt->data_end)
-        return 1;
-    struct metadata_hdr *meta_hdr = (struct metadata_hdr *)(long)arg->redirect_pkt->data;
-    struct net_metadata metadata = {IS_NET_METADATA, arg->ctx->send_next, pkt_data_len, 0};
-    if(meta_hdr->metadata_end > 4000)
-        return 1;
-    if((void *)(long)arg->redirect_pkt->data + (meta_hdr->metadata_end) + sizeof(metadata) > (void *)(long)arg->redirect_pkt->data_end)
-        return 1;
-    __builtin_memcpy((void *)(long)arg->redirect_pkt->data + (meta_hdr->metadata_end), &metadata, sizeof(metadata));
-    meta_hdr->metadata_end += sizeof(metadata);
-    
-    arg->ctx->send_next += pkt_data_len;
-
-    return 0;
-}
-
 static __always_inline void ack_net_ep(struct net_event *event, struct context *ctx,
     struct intermediate_output *inter_output, struct xdp_md *redirect_pkt) {
 
@@ -950,12 +923,12 @@ static __always_inline void ack_net_ep(struct net_event *event, struct context *
         num_loops += 1;
     //bpf_printk("NUM: %d", num_loops);
 
-    struct ack_loop_args arg;
+    struct send_loop_args arg;
     __builtin_memset(&arg, 0, sizeof(arg));
     arg.bytes_to_send = bytes_to_send;
     arg.ctx = ctx;
     arg.redirect_pkt = redirect_pkt;
-    bpf_loop(num_loops, update_cwnd, &arg, 0);
+    bpf_loop(num_loops, send_n_packets, &arg, 0);
 
     cancel_timer(event->ev_flow_id, ACK_TIMEOUT);
     struct timer_event new_event;

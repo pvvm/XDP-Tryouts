@@ -179,12 +179,6 @@ struct move_pkt_info_head_arg {
     __be32 ack_seq;
 };
 
-struct ack_loop_args {
-    __u32 bytes_to_send;
-    struct context *ctx;
-    struct xdp_md *redirect_pkt;
-};
-
 struct insert_data_array_args {
     struct context *ctx;
     struct sent_pkt_info new_elem;
