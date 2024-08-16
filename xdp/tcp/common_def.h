@@ -60,6 +60,7 @@ struct net_event {
     __be32 data_len;
     __be32 ack_seq;
     __be32 seq_num;
+    __be16 rwnd_size;
 };
 
 struct timer_event {
@@ -132,7 +133,8 @@ struct sent_pkt_info {
 
 struct context {
     __be32 last_ack;
-    __u8 repeated_acks;
+    __u8 duplicate_acks;
+    __u32 flightsize_dupl;
     __u32 ssthresh;
     __u32 cwnd_size;
 
@@ -140,19 +142,14 @@ struct context {
     __s64 SRTT;
     __s64 RTTVAR;
     __u8 first_rto;
-
-    __u16 pkt_array_head;
-    __u16 pkt_array_tail;
-    struct sent_pkt_info pkt_info_array[MAX_NUM_CTX_PKT_INFO];
-    // Maximum size of data in a packet
-    __u32 segment_size;
+    
     // The oldest unacked sequence number
     __u32 send_una;
     // The next sequence number to be sent
     __u32 send_next;
-    // Circular queue(the actual window stores sent packets): 
     // Unsent data size
     __u32 data_end;
+    __be16 last_rwnd_size;
 
     // Receive data side
     __be16 rwnd_size;

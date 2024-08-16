@@ -412,7 +412,7 @@ static bool process_packet(uint8_t *pkt, struct xsk_socket_info *xsk) {
 		struct metadata_hdr *meta_hdr = (struct metadata_hdr *) pkt;
 		unsigned char data[1500];
 		memcpy(data, pkt + sizeof(struct metadata_hdr), meta_hdr->data_len);
-
+ 
 		struct net_metadata *array_net_meta[MAX_NUM_NET_METADATA];
 		int counter_net_meta = 0;
 
@@ -430,7 +430,7 @@ static bool process_packet(uint8_t *pkt, struct xsk_socket_info *xsk) {
 			} else if (*app_or_net == IS_NET_METADATA) {
 				printf("NET ");
 				struct net_metadata *net_meta = (struct net_metadata *) (pkt + curr_start);
-				printf("%d %d %d\n", net_meta->type_metadata, net_meta->seq_num, net_meta->data_len);
+				printf("%d %d %d %d %d\n", net_meta->type_metadata, net_meta->seq_num, net_meta->data_len, net_meta->ack_or_data, net_meta->ack_num);
 				curr_start += sizeof(*net_meta);
 
 				array_net_meta[counter_net_meta] = net_meta;
@@ -800,19 +800,21 @@ int set_initial_app_queue_tail(struct flow_id f_id, int app_queue_tail_fd) {
 int set_initial_ctx_values(struct flow_id f_id, int context_fd) {
 	struct context new_ctx;
 	new_ctx.last_ack = 4294967295;
-	new_ctx.repeated_acks = 0;
+	new_ctx.duplicate_acks = 0;
+	new_ctx.flightsize_dupl = 0;
 	new_ctx.ssthresh = 999999999;
 	new_ctx.cwnd_size = 3 * SMSS;
+
 	new_ctx.RTO = ONE_SECOND;
 	new_ctx.SRTT = 0;
 	new_ctx.RTTVAR = 0;
 	new_ctx.first_rto = 1;
-	new_ctx.pkt_array_head = 0;
-	new_ctx.pkt_array_tail = 0;
-	new_ctx.segment_size = 0;
+
 	new_ctx.send_una = 0;
 	new_ctx.send_next = 0;
 	new_ctx.data_end = 0;
+	new_ctx.last_rwnd_size = 16959;
+
 	new_ctx.rwnd_size = 16959;
 	new_ctx.recv_next = 0;
 	new_ctx.data_recv_info_array[0].seq_num = 0;
