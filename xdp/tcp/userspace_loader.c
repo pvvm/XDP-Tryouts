@@ -414,15 +414,27 @@ static bool submit_multiple_pkts(struct xsk_socket_info *xsk, struct metadata_hd
 	return true;
 }
 
+void write_data_to_buffer(int cpu_id, struct app_metadata *array_app_meta[],
+	int num_app_meta, unsigned char *new_data) {
+
+	for(int i = 0; i < num_app_meta; i++) {
+		memcpy(&recv_buffer[cpu_id][array_app_meta[i]->seq_num], new_data, array_app_meta[i]->data_len);
+	}
+
+}
+
 static bool process_packet(uint8_t *pkt, struct xsk_socket_info *xsk) {
 
 	if (pkt) {
 		struct metadata_hdr *meta_hdr = (struct metadata_hdr *) pkt;
-		unsigned char data[1500];
+		//unsigned char data[1500];
+		unsigned char data[meta_hdr->data_len];
 		memcpy(data, pkt + sizeof(struct metadata_hdr), meta_hdr->data_len);
- 
+
 		struct net_metadata *array_net_meta[MAX_NUM_NET_METADATA];
+		struct app_metadata *array_app_meta[MAX_NUM_NET_METADATA];
 		int counter_net_meta = 0;
+		int counter_app_meta = 0;
 
 		int curr_start = sizeof(struct metadata_hdr) + meta_hdr->data_len;
 		while(curr_start < meta_hdr->metadata_end) {
@@ -434,6 +446,9 @@ static bool process_packet(uint8_t *pkt, struct xsk_socket_info *xsk) {
 				struct app_metadata *app_meta = (struct app_metadata *) (pkt + curr_start);
 				printf("%d %d %d\n", app_meta->type_metadata, app_meta->seq_num, app_meta->data_len);
 				curr_start += sizeof(*app_meta);
+
+				array_app_meta[counter_app_meta] = app_meta;
+				counter_app_meta++;
 
 			} else if (*app_or_net == IS_NET_METADATA) {
 				printf("NET ");
@@ -449,6 +464,9 @@ static bool process_packet(uint8_t *pkt, struct xsk_socket_info *xsk) {
 				return false;
 			}
 		}
+
+		write_data_to_buffer(xsk->cpu_id, array_app_meta, counter_app_meta, data);
+
 		return submit_multiple_pkts(xsk, meta_hdr, array_net_meta, counter_net_meta);
 	}
 

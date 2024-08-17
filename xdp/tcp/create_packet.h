@@ -75,7 +75,7 @@ void create_packet(unsigned char *data, size_t *data_len, struct pkt_info p_info
     offset += sizeof(tcp_hdr);
 
     if(data_buffer) {
-        //printf("HERE:\n%s\n", data_buffer);
+        printf("HERE:\n%s\n", data_buffer);
         memcpy(data + offset, data_buffer, p_info.data_len);
         offset += p_info.data_len;
     }
