@@ -220,8 +220,9 @@ struct net_metadata {
     __u8 type_metadata;
     __u32 seq_num;
     __u32 data_len;
-    __u8 ack_or_data;   // 1 == ACK, 0 == DATA
+    __u8 ack_flag;   // 1 == ACK, 0 == DATA
     __u32 ack_num;
+    __be16 wnd_size;
 };
 
 

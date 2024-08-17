@@ -17,6 +17,11 @@ struct pkt_info {
     __be32 dst_ip;
     __be16 src_port;
     __be16 dst_port;
+    __be32 seq;
+	__be32 ack_seq;
+    __u16 ack_flag;
+    __be16 wnd_size;
+    __u32 data_len;
 };
 
 void create_eth_header(struct ethhdr *eth_hdr,  __u8 src_mac[], __u8 dst_mac[]) {
@@ -26,11 +31,11 @@ void create_eth_header(struct ethhdr *eth_hdr,  __u8 src_mac[], __u8 dst_mac[]) 
     memcpy(eth_hdr->h_dest, dst_mac, ETH_ALEN);
 }
 
-void create_ip_header(struct iphdr *ip_hdr, __be32 src_ip, __be32 dst_ip, int *ip_id) {
+void create_ip_header(struct iphdr *ip_hdr, __be32 src_ip, __be32 dst_ip, int *ip_id, __u32 data_len) {
     memset(ip_hdr, 0, sizeof(struct iphdr));
     ip_hdr->version = 4;
     ip_hdr->ihl = 5;
-    ip_hdr->tot_len = htons(sizeof(struct iphdr) + sizeof(struct tcphdr));  // Adjust if more data is added
+    ip_hdr->tot_len = htons(data_len + sizeof(struct iphdr) + sizeof(struct tcphdr));  // Adjust if more data is added
     ip_hdr->protocol = IPPROTO_TCP;
     //ip_hdr->saddr = inet_addr("10.7.0.7");
     //ip_hdr->daddr = inet_addr("10.7.0.8");
@@ -40,24 +45,26 @@ void create_ip_header(struct iphdr *ip_hdr, __be32 src_ip, __be32 dst_ip, int *i
         ip_hdr->id = *ip_id;
 }
 
-void create_tcp_header(struct tcphdr *tcp_hdr, __be16 src_port, __be16 dst_port) {
+void create_tcp_header(struct tcphdr *tcp_hdr, struct pkt_info p_info) {
 	memset(tcp_hdr, 0, sizeof(struct tcphdr));
 	//tcp_hdr->source = htonl(1);
 	//tcp_hdr->dest = htonl(123);
-    tcp_hdr->source = src_port;
-    tcp_hdr->dest = dst_port;
-	//tcp_hdr->seq = htonl(0);
-	//tcp_hdr->ack_seq = htonl(0);
+    tcp_hdr->source = p_info.src_port;
+    tcp_hdr->dest = p_info.dst_port;
+	tcp_hdr->seq = htonl(p_info.seq);
+	tcp_hdr->ack_seq = htonl(p_info.ack_seq);
+    tcp_hdr->ack = p_info.ack_flag;
+    tcp_hdr->window = htons(p_info.wnd_size);
     tcp_hdr->doff = 5;
 }
 
-void create_packet(unsigned char *data, size_t *data_len, struct pkt_info p_info, int *ip_id) {
+void create_packet(unsigned char *data, size_t *data_len, struct pkt_info p_info, int *ip_id, char *data_buffer) {
     struct ethhdr eth_hdr;
     struct iphdr ip_hdr;
     struct tcphdr tcp_hdr;
     create_eth_header(&eth_hdr, p_info.src_mac, p_info.dst_mac);
-    create_ip_header(&ip_hdr, p_info.src_ip, p_info.dst_ip, ip_id);
-    create_tcp_header(&tcp_hdr, p_info.src_port, p_info.dst_port);
+    create_ip_header(&ip_hdr, p_info.src_ip, p_info.dst_ip, ip_id, p_info.data_len);
+    create_tcp_header(&tcp_hdr, p_info);
 
     size_t offset = 0;
     memcpy(data + offset, &eth_hdr, sizeof(eth_hdr));
@@ -67,7 +74,13 @@ void create_packet(unsigned char *data, size_t *data_len, struct pkt_info p_info
     memcpy(data + offset, &tcp_hdr, sizeof(tcp_hdr));
     offset += sizeof(tcp_hdr);
 
-    *data_len = offset;
+    if(data_buffer) {
+        //printf("HERE:\n%s\n", data_buffer);
+        memcpy(data + offset, data_buffer, p_info.data_len);
+        offset += p_info.data_len;
+    }
+
+    *data_len += offset;
 }
 
 struct pkt_info set_pkt_info(struct metadata_hdr meta_hdr, struct net_metadata meta_net) {
@@ -81,6 +94,12 @@ struct pkt_info set_pkt_info(struct metadata_hdr meta_hdr, struct net_metadata m
 
     info.src_port = meta_hdr.dst_port;
     info.dst_port = meta_hdr.src_port;
+
+    info.ack_flag = meta_net.ack_flag;
+    info.ack_seq = meta_net.ack_num;
+    info.seq = meta_net.seq_num;
+    info.wnd_size = meta_net.wnd_size;
+    info.data_len = meta_net.data_len;
 
     /*memcpy(&tmp_ip, &meta_hdr->dst_ip, sizeof(tmp_ip));
     memcpy(&meta_hdr->dst_ip, &meta_hdr->src_ip, sizeof(tmp_ip));

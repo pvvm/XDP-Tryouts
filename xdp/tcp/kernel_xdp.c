@@ -699,7 +699,7 @@ static long send_n_packets(__u32 index, struct send_loop_args *arg) {
     if((void *)(long)arg->redirect_pkt->data + sizeof(struct metadata_hdr) > (void *)(long)arg->redirect_pkt->data_end)
         return 1;
     struct metadata_hdr *meta_hdr = (struct metadata_hdr *)(long)arg->redirect_pkt->data;
-    struct net_metadata metadata = {IS_NET_METADATA, arg->ctx->send_next, pkt_data_len, 0, 0};
+    struct net_metadata metadata = {IS_NET_METADATA, arg->ctx->send_next, pkt_data_len, 0, 0, arg->ctx->rwnd_size};
     if(meta_hdr->metadata_end > 4000)
         return 1;
     if((void *)(long)arg->redirect_pkt->data + (meta_hdr->metadata_end) + sizeof(metadata) > (void *)(long)arg->redirect_pkt->data_end)
@@ -880,7 +880,7 @@ static __always_inline void ack_net_ep(struct net_event *event, struct context *
         if((void *)(long)redirect_pkt->data + sizeof(struct metadata_hdr) > (void *)(long)redirect_pkt->data_end)
             return;
         struct metadata_hdr *meta_hdr = (struct metadata_hdr *)(long)redirect_pkt->data;
-        struct net_metadata metadata = {IS_NET_METADATA, ctx->send_una, bytes_to_send, 0};
+        struct net_metadata metadata = {IS_NET_METADATA, ctx->send_una, bytes_to_send, 0, 0, ctx->rwnd_size};
         if(meta_hdr->metadata_end > 4000)
             return;
         if((void *)(long)redirect_pkt->data + (meta_hdr->metadata_end) + sizeof(metadata) > (void *)(long)redirect_pkt->data_end)
@@ -1061,7 +1061,7 @@ static __always_inline void send_ack(struct net_event *event, struct context *ct
     if((void *)(long)redirect_pkt->data + sizeof(struct metadata_hdr) > (void *)(long)redirect_pkt->data_end)
         return;
     struct metadata_hdr *meta_hdr = (struct metadata_hdr *)(long)redirect_pkt->data;
-    struct net_metadata metadata = {IS_NET_METADATA, 0, 0, 1, ctx->recv_next};
+    struct net_metadata metadata = {IS_NET_METADATA, 0, 0, 1, ctx->recv_next, ctx->rwnd_size};
     if(meta_hdr->metadata_end > 4000)
         return;
     if((void *)(long)redirect_pkt->data + (meta_hdr->metadata_end) + sizeof(metadata) > (void *)(long)redirect_pkt->data_end)
@@ -1115,7 +1115,7 @@ static __always_inline void ack_timeout_ep(struct timer_event *event, struct con
         if((void *)(long)redirect_pkt->data + sizeof(struct metadata_hdr) > (void *)(long)redirect_pkt->data_end)
             return;
         struct metadata_hdr *meta_hdr = (struct metadata_hdr *)(long)redirect_pkt->data;
-        struct net_metadata metadata = {IS_NET_METADATA, ctx->send_una, bytes_to_send, 0, 0};
+        struct net_metadata metadata = {IS_NET_METADATA, ctx->send_una, bytes_to_send, 0, 0, ctx->rwnd_size};
         if(meta_hdr->metadata_end > 4000)
             return;
         if((void *)(long)redirect_pkt->data + (meta_hdr->metadata_end) + sizeof(metadata) > (void *)(long)redirect_pkt->data_end)

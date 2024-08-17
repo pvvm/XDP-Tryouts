@@ -48,6 +48,8 @@
 #define IDLE_TIME			5000000000L
 #define ONE_SECOND			1000000000
 
+#define BUFFER_SIZE			14400
+
 static const char *default_filename = "kernel_xdp.o";
 
 static const char *default_progname = "net_arrive";
@@ -57,6 +59,9 @@ int packets_per_core[8] = {0, 0, 0, 0, 0, 0, 0, 0};
 static struct xdp_program *prog;
 int xsk_map_fd;
 bool custom_xsk = false;
+
+char *send_buffer[MAX_NUMBER_CORES];
+char *recv_buffer[MAX_NUMBER_CORES];
 
 //struct req_queue *cpu_req_queues;
 struct req_queue_v2 cpu_req_queues_v2[MAX_NUMBER_CORES];
@@ -389,7 +394,10 @@ static bool submit_multiple_pkts(struct xsk_socket_info *xsk, struct metadata_hd
 
 		unsigned char pkt[1500];
 		size_t data_len = 0;
-		create_packet(pkt, &data_len, p_info, NULL);
+		char data_buffer[array_net_meta[i]->data_len];
+		//printf("%d %d\n", array_net_meta[i]->seq_num, array_net_meta[i]->data_len);
+		memcpy(data_buffer, &send_buffer[xsk->cpu_id][array_net_meta[i]->seq_num], array_net_meta[i]->data_len);
+		create_packet(pkt, &data_len, p_info, NULL, data_buffer);
 
 		memcpy(area_mem[i], pkt, data_len);
 
@@ -430,7 +438,7 @@ static bool process_packet(uint8_t *pkt, struct xsk_socket_info *xsk) {
 			} else if (*app_or_net == IS_NET_METADATA) {
 				printf("NET ");
 				struct net_metadata *net_meta = (struct net_metadata *) (pkt + curr_start);
-				printf("%d %d %d %d %d\n", net_meta->type_metadata, net_meta->seq_num, net_meta->data_len, net_meta->ack_or_data, net_meta->ack_num);
+				printf("%d %d %d %d %d\n", net_meta->type_metadata, net_meta->seq_num, net_meta->data_len, net_meta->ack_flag, net_meta->ack_num);
 				curr_start += sizeof(*net_meta);
 
 				array_net_meta[counter_net_meta] = net_meta;
@@ -522,7 +530,7 @@ static void send_packet_directly(struct xsk_socket_info *xsk) {
     size_t data_len = 0;
     
     struct pkt_info p_info = temporary_default_info_send();
-    create_packet(pkt, &data_len, p_info, NULL);
+    create_packet(pkt, &data_len, p_info, NULL, NULL);
 	//printf("\n%lu", data_len);
 
 	uint32_t tx_idx = 0;
@@ -695,7 +703,7 @@ void trigger_idle_flow(struct pkt_info p_info, struct xsk_socket_info *xsk) {
 
 	// Note: I'm setting this value to represent a fake packet
 	int ip_id = 65535;
-	create_packet(data, &data_len, p_info, &ip_id);
+	create_packet(data, &data_len, p_info, &ip_id, NULL);
 	//struct iphdr *ip_hdr = (struct iphdr *) data + sizeof(struct ethhdr);
 
 	LIBBPF_OPTS(bpf_test_run_opts, opts);
@@ -1104,6 +1112,14 @@ int main(int argc, char **argv)
 	if(!get_all_map_fd(maps_fd, &tail_app_map_fd, &context_fd, &f_info_fd))
 		exit(EXIT_FAIL_BPF);
 
+	// Allocates and fills send buffer with letters from a to z
+	for(int i = 0; i < MAX_NUMBER_CORES; i++) {
+		send_buffer[i] = (char *)malloc(BUFFER_SIZE * sizeof(char));
+		recv_buffer[i] = (char *)malloc(BUFFER_SIZE * sizeof(char));
+		for(int j = 0; j < BUFFER_SIZE; j++)
+			send_buffer[i][j] = 'a' + (j % 26);
+	}
+
 	pthread_t threads[MAX_NUMBER_CORES];
 	cpu_set_t cpuset;
 	CPU_ZERO(&cpuset);
@@ -1139,6 +1155,9 @@ int main(int argc, char **argv)
 		pthread_mutex_destroy(&worker_lock[i]);
 		xsk_socket__delete(xsk_socket[i]->xsk);
 		xsk_umem__delete(umem[i]->umem);
+
+		free(send_buffer[i]);
+		free(recv_buffer[i]);
 	}
 
 	return EXIT_OK;
