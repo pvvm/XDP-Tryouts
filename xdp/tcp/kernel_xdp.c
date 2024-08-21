@@ -863,34 +863,6 @@ static __always_inline void ack_net_ep(struct net_event *event, struct context *
 
     ctx->last_rwnd_size = event->rwnd_size;
 
-    // Fast retransmits the first unack packet
-    if(ctx->duplicate_acks == 3) {
-        __s32 data_rest = ctx->data_end - ctx->send_next;
-        __s32 window_avail = ctx->send_una + ctx->cwnd_size - ctx->send_next;
-        __u32 bytes_to_send;
-
-        if(data_rest < window_avail)
-            bytes_to_send = data_rest;
-        else
-            bytes_to_send = window_avail;
-        
-        if(bytes_to_send > ctx->last_rwnd_size)
-            bytes_to_send = ctx->last_rwnd_size;
-
-        if((void *)(long)redirect_pkt->data + sizeof(struct metadata_hdr) > (void *)(long)redirect_pkt->data_end)
-            return;
-        struct metadata_hdr *meta_hdr = (struct metadata_hdr *)(long)redirect_pkt->data;
-        struct net_metadata metadata = {IS_NET_METADATA, ctx->send_una, bytes_to_send, 0, 0, ctx->rwnd_size};
-        if(meta_hdr->metadata_end > 4000)
-            return;
-        if((void *)(long)redirect_pkt->data + (meta_hdr->metadata_end) + sizeof(metadata) > (void *)(long)redirect_pkt->data_end)
-            return;
-        __builtin_memcpy((void *)(long)redirect_pkt->data + (meta_hdr->metadata_end), &metadata, sizeof(metadata));
-        meta_hdr->metadata_end += sizeof(metadata);
-
-        return;
-    }
-
     // Get the space acknowledged
     ctx->send_una = event->ack_seq;
 
@@ -906,15 +878,36 @@ static __always_inline void ack_net_ep(struct net_event *event, struct context *
     __s32 window_avail = ctx->send_una + ctx->cwnd_size - ctx->send_next;
     __u32 bytes_to_send;
 
-    if(data_rest < window_avail)
-        bytes_to_send = data_rest;
-    else
-        bytes_to_send = window_avail;
-    
-    if(bytes_to_send > ctx->last_rwnd_size)
-        bytes_to_send = ctx->last_rwnd_size;
+    if(data_rest == 0 || window_avail < 0 || ctx->last_rwnd_size == 0)
+        bytes_to_send = 0;
+    else {
+        if(data_rest < window_avail)
+            bytes_to_send = data_rest;
+        else
+            bytes_to_send = window_avail;
+        
+        if(bytes_to_send > ctx->last_rwnd_size)
+            bytes_to_send = ctx->last_rwnd_size;
+    }
 
     bpf_printk("REST: %d, ack_seq: %d, send_next: %d", data_rest, event->ack_seq, ctx->send_next);
+
+
+    // Fast retransmits the first unack packet
+    if(ctx->duplicate_acks == 3) {
+        if((void *)(long)redirect_pkt->data + sizeof(struct metadata_hdr) > (void *)(long)redirect_pkt->data_end)
+            return;
+        struct metadata_hdr *meta_hdr = (struct metadata_hdr *)(long)redirect_pkt->data;
+        struct net_metadata metadata = {IS_NET_METADATA, ctx->send_una, bytes_to_send, 0, 0, ctx->rwnd_size};
+        if(meta_hdr->metadata_end > 4000)
+            return;
+        if((void *)(long)redirect_pkt->data + (meta_hdr->metadata_end) + sizeof(metadata) > (void *)(long)redirect_pkt->data_end)
+            return;
+        __builtin_memcpy((void *)(long)redirect_pkt->data + (meta_hdr->metadata_end), &metadata, sizeof(metadata));
+        meta_hdr->metadata_end += sizeof(metadata);
+
+        return;
+    }
     
     // Note: ceil seems to not be working properly
     //int num_to_send = ceil(ctx->cwnd_size / SMSS);
@@ -1262,7 +1255,7 @@ static __always_inline int net_ev_process(struct xdp_md *redirect_pkt, struct fl
     *f_id = net_ev.ev_flow_id;
     *flow_context = retrieve_ctx(*f_id);
     if(!(*flow_context)) {
-        //bpf_printk("net_ev_process: Couldn't retrive ctx");
+        bpf_printk("net_ev_process: Couldn't retrive ctx");
         return 0;
     }
 
@@ -1284,6 +1277,8 @@ int net_arrive(struct xdp_md *redirect_pkt)
     // Process network event first
     if(!net_ev_process(redirect_pkt, &arg.f_id, &arg.ctx))
         return XDP_DROP;
+
+    bpf_printk("CPU: %d", bpf_get_smp_processor_id());
         
     arg.f_info = find_queue_flow_info(arg.f_id);
     if(!arg.f_info)
@@ -1296,7 +1291,6 @@ int net_arrive(struct xdp_md *redirect_pkt)
     /* An entry here means that the corresponding queue_id
      * has an active AF_XDP socket bound to it. */
     int rx_queue_index = redirect_pkt->rx_queue_index;
-    ////bpf_printk("CPU: %d", bpf_get_smp_processor_id());
     if (bpf_map_lookup_elem(&xsks_map, &rx_queue_index)) {
         /*__u64 finish_time = bpf_ktime_get_ns();
         int cpu = bpf_get_smp_processor_id();

@@ -74,7 +74,7 @@ void create_packet(unsigned char *data, size_t *data_len, struct pkt_info p_info
     memcpy(data + offset, &tcp_hdr, sizeof(tcp_hdr));
     offset += sizeof(tcp_hdr);
 
-    if(data_buffer) {
+    if(data_buffer && p_info.data_len > 0) {
         printf("HERE:\n%s\n", data_buffer);
         memcpy(data + offset, data_buffer, p_info.data_len);
         offset += p_info.data_len;
@@ -113,13 +113,13 @@ default values to headers*/
 struct pkt_info temporary_default_info_send() {
     struct pkt_info info;
 
-    unsigned char src_mac[ETH_ALEN] = {0xE4, 0x1D, 0x2D, 0x13, 0x9E, 0xD0};
+    unsigned char src_mac[ETH_ALEN] = {0x08, 0xC0, 0xEB, 0x96, 0x85, 0x85};
     memcpy(info.src_mac, src_mac, ETH_ALEN);
-    unsigned char dst_mac[ETH_ALEN] = {0xF4, 0x52, 0x14, 0x5A, 0x90, 0x70};
+    unsigned char dst_mac[ETH_ALEN] = {0xE8, 0xEB, 0xD3, 0xA4, 0x89, 0x8B};
     memcpy(info.dst_mac, dst_mac, ETH_ALEN);
 
-    info.src_ip = inet_addr("10.7.0.7");
-    info.dst_ip = inet_addr("10.7.0.8");
+    info.src_ip = inet_addr("192.168.4.231");
+    info.dst_ip = inet_addr("192.168.4.244");
 
     info.src_port = htons(230);
     info.dst_port = htons(3);
@@ -130,13 +130,13 @@ struct pkt_info temporary_default_info_send() {
 struct pkt_info temporary_default_info_rcv() {
     struct pkt_info info;
 
-    unsigned char src_mac[ETH_ALEN] = {0xF4, 0x52, 0x14, 0x5A, 0x90, 0x70};
+    unsigned char src_mac[ETH_ALEN] = {0xE8, 0xEB, 0xD3, 0xA4, 0x89, 0x8B};
     memcpy(info.src_mac, src_mac, ETH_ALEN);
-    unsigned char dst_mac[ETH_ALEN] = {0xE4, 0x1D, 0x2D, 0x13, 0x9E, 0xD0};
+    unsigned char dst_mac[ETH_ALEN] = {0x08, 0xC0, 0xEB, 0x96, 0x85, 0x85};
     memcpy(info.dst_mac, dst_mac, ETH_ALEN);
 
-    info.src_ip = inet_addr("10.7.0.8");
-    info.dst_ip = inet_addr("10.7.0.7");
+    info.src_ip = inet_addr("192.168.4.244");
+    info.dst_ip = inet_addr("192.168.4.231");
 
     info.src_port = htons(3);
     info.dst_port = htons(230);

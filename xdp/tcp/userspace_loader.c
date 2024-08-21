@@ -418,7 +418,9 @@ void write_data_to_buffer(int cpu_id, struct app_metadata *array_app_meta[],
 	int num_app_meta, unsigned char *new_data) {
 
 	for(int i = 0; i < num_app_meta; i++) {
+		//printf("%d %d\n", array_app_meta[i]->seq_num, array_app_meta[i]->data_len);
 		memcpy(&recv_buffer[cpu_id][array_app_meta[i]->seq_num], new_data, array_app_meta[i]->data_len);
+		printf("%s\n", recv_buffer[cpu_id]);
 	}
 
 }
@@ -465,7 +467,8 @@ static bool process_packet(uint8_t *pkt, struct xsk_socket_info *xsk) {
 			}
 		}
 
-		write_data_to_buffer(xsk->cpu_id, array_app_meta, counter_app_meta, data);
+		if(counter_app_meta > 0)
+			write_data_to_buffer(xsk->cpu_id, array_app_meta, counter_app_meta, data);
 
 		return submit_multiple_pkts(xsk, meta_hdr, array_net_meta, counter_net_meta);
 	}
