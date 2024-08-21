@@ -12,6 +12,7 @@
 #define IS_NET_METADATA 0
 #define IS_APP_METADATA 1
 #define MAX_NUM_CTX_PKT_INFO 500
+#define MAX_NET_EVENTS 2
 
 #define SMSS 1440
 #define RTT 100000000 // 100ms

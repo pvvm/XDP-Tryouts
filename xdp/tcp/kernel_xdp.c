@@ -154,15 +154,25 @@ struct {
 static __always_inline int initialize_timer(struct timer_event, __u64, enum timer_id);
 
 
-static __always_inline void define_minor_type(struct net_event *net_ev, __u16 ack_pkt) {
-    if(ack_pkt)
-        net_ev->event_type = ACK;
-    else
-        net_ev->event_type = DATA;
+static __always_inline __u8 define_minor_type(struct net_event net_ev[MAX_NET_EVENTS], __u16 ack_pkt, __u32 data_len) {
+    if(ack_pkt && data_len > 0) {
+        net_ev[0].event_type = DATA;
+        net_ev[1].ev_flow_id = net_ev[0].ev_flow_id;
+        net_ev[1].data_len = net_ev[0].data_len;
+        net_ev[1].ack_seq = net_ev[0].ack_seq;
+        net_ev[1].seq_num = net_ev[0].seq_num;
+        net_ev[1].rwnd_size = net_ev[0].rwnd_size;
+        net_ev[1].event_type = ACK;
+        return 2;
+    } else if(ack_pkt && data_len == 0)
+        net_ev[0].event_type = ACK;
+    else if(!ack_pkt)
+        net_ev[0].event_type = DATA;
+    return 1;
 }
 
 static __always_inline __u8 parse_packet(void *data, void *data_end,
-    struct net_event *net_ev, struct metadata_hdr *meta_hdr) {
+    struct net_event net_ev[MAX_NET_EVENTS], struct metadata_hdr *meta_hdr) {
     
     struct ethhdr *eth;
     struct iphdr *iphdr;
@@ -191,7 +201,7 @@ static __always_inline __u8 parse_packet(void *data, void *data_end,
     src_ip = ((saddr >> 8) & 0xFF) ^ src_ip;
     src_ip = ((saddr >> 16) & 0xFF) ^ src_ip;
     src_ip = ((saddr >> 24) & 0xFF) ^ src_ip;
-    net_ev->ev_flow_id.src_ip = src_ip;
+    net_ev[0].ev_flow_id.src_ip = src_ip;
 
     __be32 daddr = iphdr->daddr;
     __u8 dst_ip;
@@ -199,7 +209,7 @@ static __always_inline __u8 parse_packet(void *data, void *data_end,
     dst_ip = ((daddr >> 8) & 0xFF) ^ dst_ip;
     dst_ip = ((daddr >> 16) & 0xFF) ^ dst_ip;
     dst_ip = ((daddr >> 24) & 0xFF) ^ dst_ip;
-    net_ev->ev_flow_id.dest_ip = dst_ip;
+    net_ev[0].ev_flow_id.dest_ip = dst_ip;
 
     if(parse_tcphdr(&nh, data_end, &tcph) ==  -1) {
         //bpf_printk("parse_packet: error while parsing TCP header");
@@ -210,23 +220,23 @@ static __always_inline __u8 parse_packet(void *data, void *data_end,
     __u8 src_port;
     src_port = sport & 0xFF;
     src_port = ((sport >> 8) & 0xFF) ^ src_port;
-    net_ev->ev_flow_id.src_port = src_port;
+    net_ev[0].ev_flow_id.src_port = src_port;
 
     __be16 dport = bpf_ntohs(tcph->dest);
     __u8 dst_port;
     dst_port = dport & 0xFF;
     dst_port = ((dport >> 8) & 0xFF) ^ dst_port;
-    net_ev->ev_flow_id.dest_port = dst_port;
+    net_ev[0].ev_flow_id.dest_port = dst_port;
 
     ////bpf_printk("\nACK: %d %d\n", tcph->ack, bpf_ntohl(tcph->ack_seq));
     ////bpf_printk("%d %d", net_ev->ev_flow_id.src_ip, net_ev->ev_flow_id.dest_ip);
     ////bpf_printk("%d %d", net_ev->ev_flow_id.src_port, net_ev->ev_flow_id.dest_port);
 
-    net_ev->seq_num = bpf_ntohl(tcph->seq);
-    net_ev->ack_seq = bpf_ntohl(tcph->ack_seq);
-    net_ev->data_len = bpf_ntohs(iphdr->tot_len) - sizeof(struct iphdr) - sizeof(struct tcphdr);
-    net_ev->rwnd_size = bpf_ntohs(tcph->window);
-    define_minor_type(net_ev, tcph->ack);
+    net_ev[0].seq_num = bpf_ntohl(tcph->seq);
+    net_ev[0].ack_seq = bpf_ntohl(tcph->ack_seq);
+    net_ev[0].data_len = bpf_ntohs(iphdr->tot_len) - sizeof(struct iphdr) - sizeof(struct tcphdr);
+    net_ev[0].rwnd_size = bpf_ntohs(tcph->window);
+    __u8 ret = define_minor_type(net_ev, tcph->ack, net_ev[0].data_len);
 
     __builtin_memcpy(meta_hdr->src_mac, eth->h_source, ETH_ALEN);
     __builtin_memcpy(meta_hdr->dst_mac, eth->h_dest, ETH_ALEN);
@@ -236,13 +246,14 @@ static __always_inline __u8 parse_packet(void *data, void *data_end,
     meta_hdr->dst_port = tcph->dest;
 
     // Note: identifies if it is a bpf_prog_run packet via IP header ID
-    if(iphdr->id == 65535)
-        return 2;
+    if(iphdr->id == 65535) {
+        ret = 3;
+    }
 
-    return 1;
+    return ret;
 }
 
-static __always_inline __u8 mutate_pkt(struct xdp_md *redirect_pkt, struct net_event *net_ev) {
+static __always_inline __u8 mutate_pkt(struct xdp_md *redirect_pkt, struct net_event net_ev[MAX_NET_EVENTS]) {
 
     void *data_end = (void *)(long)redirect_pkt->data_end;
     void *data     = (void *)(long)redirect_pkt->data;
@@ -699,7 +710,7 @@ static long send_n_packets(__u32 index, struct send_loop_args *arg) {
     if((void *)(long)arg->redirect_pkt->data + sizeof(struct metadata_hdr) > (void *)(long)arg->redirect_pkt->data_end)
         return 1;
     struct metadata_hdr *meta_hdr = (struct metadata_hdr *)(long)arg->redirect_pkt->data;
-    struct net_metadata metadata = {IS_NET_METADATA, arg->ctx->send_next, pkt_data_len, 0, 0, arg->ctx->rwnd_size};
+    struct net_metadata metadata = {IS_NET_METADATA, arg->ctx->send_next, pkt_data_len, 0, arg->ctx->recv_next, arg->ctx->rwnd_size};
     if(meta_hdr->metadata_end > 4000)
         return 1;
     if((void *)(long)arg->redirect_pkt->data + (meta_hdr->metadata_end) + sizeof(metadata) > (void *)(long)arg->redirect_pkt->data_end)
@@ -715,7 +726,7 @@ static long send_n_packets(__u32 index, struct send_loop_args *arg) {
 static __always_inline void send_ep(struct app_event *event, struct context *ctx,
     struct intermediate_output *inter_output, struct xdp_md *redirect_pkt) {
 
-    // Question: can I assume that this variable always initialize as the same value as
+    // Q: can I assume that this variable always initialize as the same value as
     // ctx->send_next (both 0)?
     ctx->data_end += event->data_size;
  
@@ -723,7 +734,7 @@ static __always_inline void send_ep(struct app_event *event, struct context *ctx
     __s32 data_rest = ctx->data_end - ctx->send_next;
     // Total data to transmit between send_next and cwnd_size
     __s32 window_avail = ctx->send_una + ctx->cwnd_size - ctx->send_next;
-    __u32 bytes_to_send;
+    __u32 bytes_to_send = 0;
 
     if(data_rest == 0 || window_avail < 0 || ctx->last_rwnd_size == 0)
         bytes_to_send = 0;
@@ -876,7 +887,7 @@ static __always_inline void ack_net_ep(struct net_event *event, struct context *
 
     // Total data to transmit between send_next and cwnd_size
     __s32 window_avail = ctx->send_una + ctx->cwnd_size - ctx->send_next;
-    __u32 bytes_to_send;
+    __u32 bytes_to_send = 0;
 
     if(data_rest == 0 || window_avail < 0 || ctx->last_rwnd_size == 0)
         bytes_to_send = 0;
@@ -898,7 +909,7 @@ static __always_inline void ack_net_ep(struct net_event *event, struct context *
         if((void *)(long)redirect_pkt->data + sizeof(struct metadata_hdr) > (void *)(long)redirect_pkt->data_end)
             return;
         struct metadata_hdr *meta_hdr = (struct metadata_hdr *)(long)redirect_pkt->data;
-        struct net_metadata metadata = {IS_NET_METADATA, ctx->send_una, bytes_to_send, 0, 0, ctx->rwnd_size};
+        struct net_metadata metadata = {IS_NET_METADATA, ctx->send_una, bytes_to_send, 0, ctx->recv_next, ctx->rwnd_size};
         if(meta_hdr->metadata_end > 4000)
             return;
         if((void *)(long)redirect_pkt->data + (meta_hdr->metadata_end) + sizeof(metadata) > (void *)(long)redirect_pkt->data_end)
@@ -976,7 +987,7 @@ static long insert_recv_buffer(__u32 index, struct insert_data_array_args *arg) 
         arg->new_elem = temp;
     }
 
-    // Question: this might be problematic to translate from MTP to XDP. We need to keep
+    // Q: this might be problematic to translate from MTP to XDP. We need to keep
     // doing boundary checks, even if it's obviously unnecessary
     if(arg->curr_index >= MAX_NUM_CTX_PKT_INFO)
         return 1;
@@ -1050,11 +1061,36 @@ static __always_inline void data_net_ep(struct net_event *event, struct context 
 
 static __always_inline void send_ack(struct net_event *event, struct context *ctx,
     struct intermediate_output *inter_output, struct xdp_md *redirect_pkt) {
+
+    // Total data yet to transmit 
+    __s32 data_rest = ctx->data_end - ctx->send_next;
+    // Total data to transmit between send_next and cwnd_size
+    __s32 window_avail = ctx->send_una + ctx->cwnd_size - ctx->send_next;
+    __u32 bytes_to_send = 0;
+
+    // Q: won't window_avail always be 0 or negative? Since we need ack event to change it first
+
+    bpf_printk("\n%d %d %d\n", data_rest, window_avail, ctx->last_rwnd_size);
+    if(data_rest == 0 || window_avail < 0 || ctx->last_rwnd_size == 0)
+        bytes_to_send = 0;
+    else {
+        if(data_rest < window_avail)
+            bytes_to_send = data_rest;
+        else
+            bytes_to_send = window_avail;
+        
+        if(bytes_to_send > ctx->last_rwnd_size)
+            bytes_to_send = ctx->last_rwnd_size;
+
+        if (bytes_to_send > SMSS)
+            bytes_to_send = SMSS;
+    }
+    bpf_printk("\nBYTES: %d\n", bytes_to_send);
     
     if((void *)(long)redirect_pkt->data + sizeof(struct metadata_hdr) > (void *)(long)redirect_pkt->data_end)
         return;
     struct metadata_hdr *meta_hdr = (struct metadata_hdr *)(long)redirect_pkt->data;
-    struct net_metadata metadata = {IS_NET_METADATA, 0, 0, 1, ctx->recv_next, ctx->rwnd_size};
+    struct net_metadata metadata = {IS_NET_METADATA, ctx->send_una, bytes_to_send, 1, ctx->recv_next, ctx->rwnd_size};
     if(meta_hdr->metadata_end > 4000)
         return;
     if((void *)(long)redirect_pkt->data + (meta_hdr->metadata_end) + sizeof(metadata) > (void *)(long)redirect_pkt->data_end)
@@ -1081,18 +1117,18 @@ static __always_inline void app_feedback_ep(struct net_event *event, struct cont
 static __always_inline void ack_timeout_ep(struct timer_event *event, struct context *ctx,
     struct intermediate_output *inter_output, struct xdp_md *redirect_pkt) {
     // Resend packet
-    // Question: similar problem as I had in app_event, but with timer_event seq_num. Had to change the order in struct definition
+    // Q: similar problem as I had in app_event, but with timer_event seq_num. Had to change the order in struct definition
     bpf_printk("SEND_NXT: %d, SEND_UNA: %d", ctx->send_next, ctx->send_una);
     if(ctx->send_una == event->seq_num) {
         // Slow start after a timeout
         ctx->cwnd_size = SMSS;
 
-        // Question: is this right? Since we are retransmitting something, I think it would make sense
+        // Q: is this right? Since we are retransmitting something, I think it would make sense
         // to use send_una instead of send_next
         __s32 data_rest = ctx->data_end - ctx->send_una;
         // Total data to transmit between send_next and cwnd_size
         __s32 window_avail = ctx->send_una + ctx->cwnd_size;
-        __u32 bytes_to_send;
+        __u32 bytes_to_send = 0;
 
         if(data_rest < window_avail)
             bytes_to_send = data_rest;
@@ -1108,7 +1144,7 @@ static __always_inline void ack_timeout_ep(struct timer_event *event, struct con
         if((void *)(long)redirect_pkt->data + sizeof(struct metadata_hdr) > (void *)(long)redirect_pkt->data_end)
             return;
         struct metadata_hdr *meta_hdr = (struct metadata_hdr *)(long)redirect_pkt->data;
-        struct net_metadata metadata = {IS_NET_METADATA, ctx->send_una, bytes_to_send, 0, 0, ctx->rwnd_size};
+        struct net_metadata metadata = {IS_NET_METADATA, ctx->send_una, bytes_to_send, 0, ctx->recv_next, ctx->rwnd_size};
         if(meta_hdr->metadata_end > 4000)
             return;
         if((void *)(long)redirect_pkt->data + (meta_hdr->metadata_end) + sizeof(metadata) > (void *)(long)redirect_pkt->data_end)
@@ -1246,21 +1282,25 @@ static long ev_process_loop(__u32 index, struct sched_loop_args * arg) {
 static __always_inline int net_ev_process(struct xdp_md *redirect_pkt, struct flow_id * f_id,
     struct context **flow_context) {
 
-    struct net_event net_ev;
+    struct net_event net_ev[MAX_NET_EVENTS];
 
-    __u8 ret = mutate_pkt(redirect_pkt, &net_ev);
+    __u8 ret = mutate_pkt(redirect_pkt, net_ev);
     if(!ret)
         return 0;
 
-    *f_id = net_ev.ev_flow_id;
+    *f_id = net_ev[0].ev_flow_id;
     *flow_context = retrieve_ctx(*f_id);
     if(!(*flow_context)) {
         bpf_printk("net_ev_process: Couldn't retrive ctx");
         return 0;
     }
 
-    if(ret == 1)
-        dispatcher(&net_ev, net_ev.event_type, *flow_context, redirect_pkt);
+    if(ret == 1) // One network packet
+        dispatcher(&net_ev[0], net_ev[0].event_type, *flow_context, redirect_pkt);
+    if(ret == 2) { // Two network packets
+        dispatcher(&net_ev[0], net_ev[0].event_type, *flow_context, redirect_pkt);
+        dispatcher(&net_ev[1], net_ev[1].event_type, *flow_context, redirect_pkt);
+    }
 
     return 1;
 }
