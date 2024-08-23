@@ -39,22 +39,22 @@
 #include "create_packet.h"
 #include "idle_flow_list.h"
 
-#define NUM_FRAMES         	4096
+#define NUM_FRAMES         	409600
 #define FRAME_SIZE         	XSK_UMEM__DEFAULT_FRAME_SIZE
 #define RX_BATCH_SIZE     	64
 #define INVALID_UMEM_FRAME 	UINT64_MAX
 
 #define NUMBER_MOM			3
-#define IDLE_TIME			5000000000L
+#define IDLE_TIME			100000000L // 100ms
 #define ONE_SECOND			1000000000
 
-#define BUFFER_SIZE			14400
+#define BUFFER_SIZE			1440000000
 
 static const char *default_filename = "kernel_xdp.o";
 
 static const char *default_progname = "net_arrive";
 
-int packets_per_core[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+int packets_per_core[MAX_NUMBER_CORES];
 
 static struct xdp_program *prog;
 int xsk_map_fd;
@@ -420,7 +420,7 @@ void write_data_to_buffer(int cpu_id, struct app_metadata *array_app_meta[],
 	for(int i = 0; i < num_app_meta; i++) {
 		//printf("%d %d\n", array_app_meta[i]->seq_num, array_app_meta[i]->data_len);
 		memcpy(&recv_buffer[cpu_id][array_app_meta[i]->seq_num], new_data, array_app_meta[i]->data_len);
-		printf("%s\n", recv_buffer[cpu_id]);
+		//printf("%s\n", recv_buffer[cpu_id]);
 	}
 
 }
@@ -428,6 +428,7 @@ void write_data_to_buffer(int cpu_id, struct app_metadata *array_app_meta[],
 static bool process_packet(uint8_t *pkt, struct xsk_socket_info *xsk) {
 
 	if (pkt) {
+		printf("FREE: %d\n", xsk->umem_frame_free);
 		struct metadata_hdr *meta_hdr = (struct metadata_hdr *) pkt;
 		//unsigned char data[1500];
 		unsigned char data[meta_hdr->data_len];
@@ -831,7 +832,7 @@ int set_initial_ctx_values(struct flow_id f_id, int context_fd) {
 	new_ctx.last_ack = 4294967295;
 	new_ctx.duplicate_acks = 0;
 	new_ctx.flightsize_dupl = 0;
-	new_ctx.ssthresh = 999999999;
+	new_ctx.ssthresh = 16959;
 	new_ctx.cwnd_size = 3 * SMSS;
 
 	new_ctx.RTO = ONE_SECOND;
@@ -913,7 +914,7 @@ void distribute_requests(int *map_fds, int context_fd, int flow_info_fd, int tai
 	init_queue_v2(cpu_req_queues_v2);
 
 	// Note: at this moment the flow_id is fixed to this one
-	struct app_event event = {SEND, f_id, SMSS * 2, 1};
+	struct app_event event = {SEND, f_id, BUFFER_SIZE, 1};
 	int cpu_to_send = 0;
 	while(1) {
 		if(!scanf("%d", &cpu_to_send))
@@ -967,7 +968,7 @@ static void exit_application(int signal)
 	global_exit = true;
 
 	int pkt_sum = 0;
-	for(int i = 0; i < 8; i++) {
+	for(int i = 0; i < MAX_NUMBER_CORES; i++) {
 		pkt_sum += packets_per_core[i];
 	}
 	printf("Total num packets sent: %d\n", pkt_sum);
@@ -986,6 +987,10 @@ int main(int argc, char **argv)
 	//pthread_t stats_poll_thread[MAX_NUMBER_CORES];
 	int err;
 	char errmsg[1024];
+
+	for(int i = 0; i < MAX_NUMBER_CORES; i++) {
+		packets_per_core[i] = 0;
+	}
 
 	/* Global shutdown handler */
 	signal(SIGINT, exit_application);
@@ -1140,6 +1145,7 @@ int main(int argc, char **argv)
 		for(int j = 0; j < BUFFER_SIZE; j++)
 			send_buffer[i][j] = 'a' + (j % 26);
 	}
+	printf("All set!\n");
 
 	pthread_t threads[MAX_NUMBER_CORES];
 	cpu_set_t cpuset;

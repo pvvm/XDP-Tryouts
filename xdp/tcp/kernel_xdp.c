@@ -173,7 +173,6 @@ static __always_inline __u8 define_minor_type(struct net_event net_ev[MAX_NET_EV
 
 static __always_inline __u8 parse_packet(void *data, void *data_end,
     struct net_event net_ev[MAX_NET_EVENTS], struct metadata_hdr *meta_hdr) {
-    
     struct ethhdr *eth;
     struct iphdr *iphdr;
     struct tcphdr *tcph;
@@ -249,6 +248,8 @@ static __always_inline __u8 parse_packet(void *data, void *data_end,
     if(iphdr->id == 65535) {
         ret = 3;
     }
+
+    //bpf_printk("Net packet %d", ret);
 
     return ret;
 }
@@ -438,6 +439,7 @@ static __always_inline int next_event(struct queue_flow_info * f_info) {
 
     //bpf_printk("APP: %d", type_priorities[0]);
     //bpf_printk("TIMER: %d PROG: %d", type_priorities[1], type_priorities[2]);
+    //bpf_printk("\nLen timer: %d",  f_info->timer_info.len_timer_queue);
 
     __u32 sum = type_priorities[0] + type_priorities[1] + type_priorities[2];
     if(sum == 0)
@@ -732,20 +734,22 @@ static __always_inline void send_ep(struct app_event *event, struct context *ctx
  
     // Total data yet to transmit 
     __s32 data_rest = ctx->data_end - ctx->send_next;
+
+    __u32 effective_window = ctx->cwnd_size;
+    if(effective_window > ctx->last_rwnd_size)
+        effective_window = ctx->last_rwnd_size;
+
     // Total data to transmit between send_next and cwnd_size
-    __s32 window_avail = ctx->send_una + ctx->cwnd_size - ctx->send_next;
+    __s32 window_avail = ctx->send_una + effective_window - ctx->send_next;
     __u32 bytes_to_send = 0;
 
-    if(data_rest == 0 || window_avail < 0 || ctx->last_rwnd_size == 0)
-        bytes_to_send = 0;
+    if(window_avail < 0)
+        return;
     else {
         if(data_rest < window_avail)
             bytes_to_send = data_rest;
         else
             bytes_to_send = window_avail;
-        
-        if(bytes_to_send > ctx->last_rwnd_size)
-            bytes_to_send = ctx->last_rwnd_size;
     }
 
     // Note: ceil seems to not be working properly
@@ -774,9 +778,6 @@ static __always_inline void slows_congc_ep(struct net_event *event, struct conte
     if(event->ack_seq < ctx->send_una || ctx->send_next < event->ack_seq)
         return;
 
-    if(ctx->send_next < event->ack_seq)
-        return;
-
     if(inter_output->change_cwnd) {
         // Slow start
         if(ctx->cwnd_size < ctx->ssthresh) {
@@ -784,8 +785,11 @@ static __always_inline void slows_congc_ep(struct net_event *event, struct conte
         }
         // Congestion control
         else {
+            int add_cwnd = SMSS * SMSS / ctx->cwnd_size;
+            if(add_cwnd == 0)
+                add_cwnd = 1;
             // TODO: check if should use floor, ceil or nothing
-            ctx->cwnd_size += SMSS * SMSS / ctx->cwnd_size;
+            ctx->cwnd_size += add_cwnd;
         }
     }
 }
@@ -794,9 +798,6 @@ static __always_inline void fast_retr_rec_ep(struct net_event *event, struct con
     struct intermediate_output *inter_output, struct xdp_md *redirect_pkt) {
     
     if(event->ack_seq < ctx->send_una || ctx->send_next < event->ack_seq)
-        return;
-    
-    if(ctx->send_next < event->ack_seq)
         return;
 
     inter_output->change_cwnd = 1;
@@ -842,9 +843,6 @@ static __always_inline void rto_ep(struct net_event *event, struct context *ctx,
     if(event->ack_seq < ctx->send_una || ctx->send_next < event->ack_seq)
         return;
 
-    if(ctx->send_next < event->ack_seq)
-        return;
-
     if(ctx->first_rto) {
         ctx->SRTT = RTT;
         ctx->RTTVAR = RTT / 2;
@@ -885,27 +883,16 @@ static __always_inline void ack_net_ep(struct net_event *event, struct context *
         return;
     }
 
-    // Total data to transmit between send_next and cwnd_size
-    __s32 window_avail = ctx->send_una + ctx->cwnd_size - ctx->send_next;
+    __u32 effective_window = ctx->cwnd_size;
+    if(effective_window > ctx->last_rwnd_size)
+        effective_window = ctx->last_rwnd_size;
     __u32 bytes_to_send = 0;
-
-    if(data_rest == 0 || window_avail < 0 || ctx->last_rwnd_size == 0)
-        bytes_to_send = 0;
-    else {
-        if(data_rest < window_avail)
-            bytes_to_send = data_rest;
-        else
-            bytes_to_send = window_avail;
-        
-        if(bytes_to_send > ctx->last_rwnd_size)
-            bytes_to_send = ctx->last_rwnd_size;
-    }
-
-    bpf_printk("REST: %d, ack_seq: %d, send_next: %d", data_rest, event->ack_seq, ctx->send_next);
-
 
     // Fast retransmits the first unack packet
     if(ctx->duplicate_acks == 3) {
+        bytes_to_send = SMSS;
+        if(bytes_to_send > effective_window)
+            bytes_to_send = effective_window;
         if((void *)(long)redirect_pkt->data + sizeof(struct metadata_hdr) > (void *)(long)redirect_pkt->data_end)
             return;
         struct metadata_hdr *meta_hdr = (struct metadata_hdr *)(long)redirect_pkt->data;
@@ -919,6 +906,22 @@ static __always_inline void ack_net_ep(struct net_event *event, struct context *
 
         return;
     }
+
+    // Total data to transmit between send_next and cwnd_size
+    __s32 window_avail = ctx->send_una + effective_window - ctx->send_next;
+    bpf_printk("duplicate %d %d", ctx->duplicate_acks, effective_window);
+
+    if(window_avail < 0)
+        return;
+    else {
+        if(data_rest < window_avail)
+            bytes_to_send = data_rest;
+        else
+            bytes_to_send = window_avail;
+    }
+
+    bpf_printk("\nbytes: %d, ack_seq: %d, send_next: %d", bytes_to_send, event->ack_seq, ctx->send_next);
+    bpf_printk("\nCongestion window: %d, send_una: %d window avail %d", ctx->cwnd_size, ctx->send_una, window_avail);
     
     // Note: ceil seems to not be working properly
     //int num_to_send = ceil(ctx->cwnd_size / SMSS);
@@ -991,6 +994,11 @@ static long insert_recv_buffer(__u32 index, struct insert_data_array_args *arg) 
     // doing boundary checks, even if it's obviously unnecessary
     if(arg->curr_index >= MAX_NUM_CTX_PKT_INFO)
         return 1;
+    
+    if(arg->ctx->data_recv_info_array[arg->curr_index].seq_num == arg->new_elem.seq_num &&
+        arg->ctx->data_recv_info_array[arg->curr_index].data_len == arg->new_elem.data_len && arg->found == 0) {
+        return 1;
+    }
 
     if(arg->ctx->data_recv_info_array[arg->curr_index].seq_num <= arg->new_elem.seq_num && arg->found == 0) {
         struct sent_pkt_info temp = arg->ctx->data_recv_info_array[arg->curr_index];
@@ -1019,8 +1027,8 @@ static __always_inline void data_net_ep(struct net_event *event, struct context 
     (event->seq_num + event->data_len - 1 < ctx->recv_next))
         return;
 
-    bpf_printk("\nEVENT SEQ: %d\nRECV NEXT: %d\n", event->seq_num, ctx->recv_next);
-    bpf_printk("\nDATA LEN: %d\n", event->data_len);
+    //bpf_printk("\nEVENT SEQ: %d\nRECV NEXT: %d\n", event->seq_num, ctx->recv_next);
+    //bpf_printk("\nDATA LEN: %d\n", event->data_len);
     // If interval between sequence number and (seq num + data len) contains recv_next
     if(event->seq_num <= ctx->recv_next && event->seq_num + event->data_len - 1 >= ctx->recv_next) {
         if(event->seq_num + event->data_len < ctx->recv_next + ctx->rwnd_size)
@@ -1064,24 +1072,23 @@ static __always_inline void send_ack(struct net_event *event, struct context *ct
 
     // Total data yet to transmit 
     __s32 data_rest = ctx->data_end - ctx->send_next;
+
+    __u32 effective_window = ctx->cwnd_size;
+    if(effective_window > ctx->last_rwnd_size)
+        effective_window = ctx->last_rwnd_size;
+
     // Total data to transmit between send_next and cwnd_size
-    __s32 window_avail = ctx->send_una + ctx->cwnd_size - ctx->send_next;
+    __s32 window_avail = ctx->send_una + effective_window - ctx->send_next;
     __u32 bytes_to_send = 0;
 
-    // Q: won't window_avail always be 0 or negative? Since we need ack event to change it first
-
-    bpf_printk("\n%d %d %d\n", data_rest, window_avail, ctx->last_rwnd_size);
-    if(data_rest == 0 || window_avail < 0 || ctx->last_rwnd_size == 0)
-        bytes_to_send = 0;
+    if(window_avail < 0)
+        return;
     else {
         if(data_rest < window_avail)
             bytes_to_send = data_rest;
         else
             bytes_to_send = window_avail;
         
-        if(bytes_to_send > ctx->last_rwnd_size)
-            bytes_to_send = ctx->last_rwnd_size;
-
         if (bytes_to_send > SMSS)
             bytes_to_send = SMSS;
     }
@@ -1101,7 +1108,7 @@ static __always_inline void send_ack(struct net_event *event, struct context *ct
 
 static __always_inline void app_feedback_ep(struct net_event *event, struct context *ctx,
     struct intermediate_output *inter_output, struct xdp_md *redirect_pkt) {
-    
+
     if((void *)(long)redirect_pkt->data + sizeof(struct metadata_hdr) > (void *)(long)redirect_pkt->data_end)
     return;
     struct metadata_hdr *meta_hdr = (struct metadata_hdr *)(long)redirect_pkt->data;
@@ -1121,25 +1128,38 @@ static __always_inline void ack_timeout_ep(struct timer_event *event, struct con
     bpf_printk("SEND_NXT: %d, SEND_UNA: %d", ctx->send_next, ctx->send_una);
     if(ctx->send_una == event->seq_num) {
         // Slow start after a timeout
-        ctx->cwnd_size = SMSS;
+        ctx->cwnd_size = SMSS * 3;
+
+        __u32 opt1 = (ctx->send_next - ctx->send_una) / 2;
+        __u32 opt2 = 2 * SMSS;
+        if(opt1 >= opt2)
+            ctx->ssthresh = opt1;
+        else
+            ctx->ssthresh = opt2;
 
         // Q: is this right? Since we are retransmitting something, I think it would make sense
         // to use send_una instead of send_next
         __s32 data_rest = ctx->data_end - ctx->send_una;
+
+        __u32 effective_window = ctx->cwnd_size;
+        if(effective_window > ctx->last_rwnd_size)
+            effective_window = ctx->last_rwnd_size;
+
         // Total data to transmit between send_next and cwnd_size
-        __s32 window_avail = ctx->send_una + ctx->cwnd_size;
+        __s32 window_avail = ctx->send_una + effective_window - ctx->send_next;
         __u32 bytes_to_send = 0;
 
-        if(data_rest < window_avail)
-            bytes_to_send = data_rest;
-        else
-            bytes_to_send = window_avail;
-
-        if(bytes_to_send > ctx->last_rwnd_size)
-            bytes_to_send = ctx->last_rwnd_size;
-
-        if (bytes_to_send > SMSS)
-            bytes_to_send = SMSS;
+        if(window_avail < 0)
+            return;
+        else {
+            if(data_rest < window_avail)
+                bytes_to_send = data_rest;
+            else
+                bytes_to_send = window_avail;
+            
+            if (bytes_to_send > SMSS)
+                bytes_to_send = SMSS;
+        }
 
         if((void *)(long)redirect_pkt->data + sizeof(struct metadata_hdr) > (void *)(long)redirect_pkt->data_end)
             return;
@@ -1152,7 +1172,7 @@ static __always_inline void ack_timeout_ep(struct timer_event *event, struct con
         __builtin_memcpy((void *)(long)redirect_pkt->data + (meta_hdr->metadata_end), &metadata, sizeof(metadata));
         meta_hdr->metadata_end += sizeof(metadata);
 
-        restart_timer(event->ev_flow_id, ctx->RTO, ACK_TIMEOUT);
+        restart_timer(event->ev_flow_id, ctx->cwnd_size, ACK_TIMEOUT);
     }
 }
 
@@ -1166,6 +1186,7 @@ static __always_inline void dispatcher(void * event, enum minor_event_type type,
     case SEND:
         //bpf_printk("SEND");
         send_ep(event, ctx, &inter_output, redirect_pkt);
+        bpf_printk("SEND");
         break;
     
     case ACK:
@@ -1174,17 +1195,21 @@ static __always_inline void dispatcher(void * event, enum minor_event_type type,
         fast_retr_rec_ep(event, ctx, &inter_output, redirect_pkt);
         slows_congc_ep(event, ctx, &inter_output, redirect_pkt);
         ack_net_ep(event, ctx, &inter_output, redirect_pkt);
+        //bpf_printk("ACK");
         break;
 
     case DATA:
+        //bpf_printk("DATA");
         data_net_ep(event, ctx, &inter_output, redirect_pkt);
         send_ack(event, ctx, &inter_output, redirect_pkt);
         app_feedback_ep(event, ctx, &inter_output, redirect_pkt);
+        bpf_printk("DATA");
         break;
     
     case MISS_ACK:
         //bpf_printk("MISS_ACK");
         ack_timeout_ep(event, ctx, &inter_output, redirect_pkt);
+        bpf_printk("MISS_ACK");
         break;
     
     case PROG_TEST:
@@ -1318,7 +1343,7 @@ int net_arrive(struct xdp_md *redirect_pkt)
     if(!net_ev_process(redirect_pkt, &arg.f_id, &arg.ctx))
         return XDP_DROP;
 
-    bpf_printk("CPU: %d", bpf_get_smp_processor_id());
+    //bpf_printk("CPU: %d", bpf_get_smp_processor_id());
         
     arg.f_info = find_queue_flow_info(arg.f_id);
     if(!arg.f_info)

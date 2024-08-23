@@ -43,6 +43,8 @@ void create_ip_header(struct iphdr *ip_hdr, __be32 src_ip, __be32 dst_ip, int *i
     ip_hdr->daddr = dst_ip;
     if(ip_id)
         ip_hdr->id = *ip_id;
+    else
+        ip_hdr->id = 0;
 }
 
 void create_tcp_header(struct tcphdr *tcp_hdr, struct pkt_info p_info) {
@@ -75,7 +77,7 @@ void create_packet(unsigned char *data, size_t *data_len, struct pkt_info p_info
     offset += sizeof(tcp_hdr);
 
     if(data_buffer && p_info.data_len > 0) {
-        printf("HERE:\n%s\n", data_buffer);
+        //printf("HERE:\n%s\n", data_buffer);
         memcpy(data + offset, data_buffer, p_info.data_len);
         offset += p_info.data_len;
     }
