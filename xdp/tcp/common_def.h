@@ -162,6 +162,7 @@ struct context {
 
 struct intermediate_output {
     __u8 change_cwnd;
+    __u8 skip_ack_eps;
 };
 
 struct sched_loop_args {

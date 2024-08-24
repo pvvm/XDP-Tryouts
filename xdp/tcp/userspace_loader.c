@@ -39,7 +39,7 @@
 #include "create_packet.h"
 #include "idle_flow_list.h"
 
-#define NUM_FRAMES         	409600
+#define NUM_FRAMES         	4096
 #define FRAME_SIZE         	XSK_UMEM__DEFAULT_FRAME_SIZE
 #define RX_BATCH_SIZE     	64
 #define INVALID_UMEM_FRAME 	UINT64_MAX
@@ -67,6 +67,8 @@ char *recv_buffer[MAX_NUMBER_CORES];
 struct req_queue_v2 cpu_req_queues_v2[MAX_NUMBER_CORES];
 
 pthread_mutex_t worker_lock[MAX_NUMBER_CORES];
+
+clock_t start_time, end_time;
 
 struct config cfg = {
 	.ifindex   = -1,
@@ -342,7 +344,7 @@ static void complete_tx(struct xsk_socket_info *xsk)
 	completed = xsk_ring_cons__peek(&xsk->umem->cq,
 					XSK_RING_CONS__DEFAULT_NUM_DESCS,
 					&idx_cq);
-	//printf("CPU: %d Completed %d\n", sched_getcpu(), completed);
+	//printf("Completed %d\n", completed);
 
 	if (completed > 0) {
 		for (int i = 0; i < completed; i++) {
@@ -376,6 +378,7 @@ static bool submit_multiple_pkts(struct xsk_socket_info *xsk, struct metadata_hd
 		frame_address[i] = xsk_alloc_umem_frame(xsk);
 		area_mem[i] = xsk_umem__get_data(xsk->umem->buffer, frame_address[i]);
 		if(!area_mem[i]) {
+			printf("OIE\n");
 			for(int j = 0; j <= i; j++)
 				xsk_free_umem_frame(xsk, frame_address[j]);
 			return false;
@@ -428,7 +431,6 @@ void write_data_to_buffer(int cpu_id, struct app_metadata *array_app_meta[],
 static bool process_packet(uint8_t *pkt, struct xsk_socket_info *xsk) {
 
 	if (pkt) {
-		printf("FREE: %d\n", xsk->umem_frame_free);
 		struct metadata_hdr *meta_hdr = (struct metadata_hdr *) pkt;
 		//unsigned char data[1500];
 		unsigned char data[meta_hdr->data_len];
@@ -445,23 +447,29 @@ static bool process_packet(uint8_t *pkt, struct xsk_socket_info *xsk) {
 			//printf("%d\n", *app_or_net);
 
 			if(*app_or_net == IS_APP_METADATA) {
-				printf("APP ");
+				//printf("APP ");
 				struct app_metadata *app_meta = (struct app_metadata *) (pkt + curr_start);
-				printf("%d %d %d\n", app_meta->type_metadata, app_meta->seq_num, app_meta->data_len);
+				//printf("%d %d %d\n", app_meta->type_metadata, app_meta->seq_num, app_meta->data_len);
 				curr_start += sizeof(*app_meta);
 
 				array_app_meta[counter_app_meta] = app_meta;
 				counter_app_meta++;
 
 			} else if (*app_or_net == IS_NET_METADATA) {
-				printf("NET ");
+				//printf("NET ");
 				struct net_metadata *net_meta = (struct net_metadata *) (pkt + curr_start);
-				printf("%d %d %d %d %d\n", net_meta->type_metadata, net_meta->seq_num, net_meta->data_len, net_meta->ack_flag, net_meta->ack_num);
+				//printf("%d %d %d %d %d\n", net_meta->type_metadata, net_meta->seq_num, net_meta->data_len, net_meta->ack_flag, net_meta->ack_num);
 				curr_start += sizeof(*net_meta);
 
 				array_net_meta[counter_net_meta] = net_meta;
 				counter_net_meta++;
 
+				if(net_meta->seq_num + net_meta->data_len == BUFFER_SIZE) {
+					end_time = clock();
+				}
+				if(net_meta->seq_num == 0) {
+					start_time = clock();
+				}
 			} else {
 				printf("Invalid metadata\n");
 				return false;
@@ -532,8 +540,8 @@ static void handle_receive_packets(struct xsk_socket_info *xsk)
 		//printf("RX ADDRESS: %ld\n", addr);
 
 		uint8_t *pkt = xsk_umem__get_data(xsk->umem->buffer, addr);
-		if (!process_packet(pkt, xsk))
-			xsk_free_umem_frame(xsk, addr);
+		process_packet(pkt, xsk);
+		xsk_free_umem_frame(xsk, addr);
 
 		xsk->stats.rx_bytes += len;
 	}
@@ -1186,6 +1194,9 @@ int main(int argc, char **argv)
 		free(send_buffer[i]);
 		free(recv_buffer[i]);
 	}
+
+	double time_spent = (double)(end_time - start_time) / CLOCKS_PER_SEC;
+	printf("Time taken: %f seconds\n", time_spent);
 
 	return EXIT_OK;
 }

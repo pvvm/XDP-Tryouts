@@ -775,8 +775,12 @@ static __always_inline void send_ep(struct app_event *event, struct context *ctx
 static __always_inline void slows_congc_ep(struct net_event *event, struct context *ctx,
     struct intermediate_output *inter_output, struct xdp_md *redirect_pkt) {
     
-    if(event->ack_seq < ctx->send_una || ctx->send_next < event->ack_seq)
+    inter_output->skip_ack_eps = 0;
+    // Q: eBPF verifier works in mysterious ways
+    if(event->ack_seq < ctx->send_una || ctx->send_next < event->ack_seq) {
+        inter_output->skip_ack_eps = 1;
         return;
+    }
 
     if(inter_output->change_cwnd) {
         // Slow start
@@ -797,7 +801,9 @@ static __always_inline void slows_congc_ep(struct net_event *event, struct conte
 static __always_inline void fast_retr_rec_ep(struct net_event *event, struct context *ctx,
     struct intermediate_output *inter_output, struct xdp_md *redirect_pkt) {
     
-    if(event->ack_seq < ctx->send_una || ctx->send_next < event->ack_seq)
+    /*if(event->ack_seq < ctx->send_una || ctx->send_next < event->ack_seq)
+        return;*/
+    if(inter_output->skip_ack_eps)
         return;
 
     inter_output->change_cwnd = 1;
@@ -840,7 +846,9 @@ static __always_inline void fast_retr_rec_ep(struct net_event *event, struct con
 static __always_inline void rto_ep(struct net_event *event, struct context *ctx,
     struct intermediate_output *inter_output, struct xdp_md *redirect_pkt) {
 
-    if(event->ack_seq < ctx->send_una || ctx->send_next < event->ack_seq)
+    /*if(event->ack_seq < ctx->send_una || ctx->send_next < event->ack_seq)
+        return;*/
+    if(inter_output->skip_ack_eps)
         return;
 
     if(ctx->first_rto) {
@@ -867,7 +875,9 @@ static __always_inline void rto_ep(struct net_event *event, struct context *ctx,
 static __always_inline void ack_net_ep(struct net_event *event, struct context *ctx,
     struct intermediate_output *inter_output, struct xdp_md *redirect_pkt) {
 
-    if(event->ack_seq < ctx->send_una || ctx->send_next < event->ack_seq)
+    /*if(event->ack_seq < ctx->send_una || ctx->send_next < event->ack_seq)
+        return;*/   
+    if(inter_output->skip_ack_eps)
         return;
 
     ctx->last_rwnd_size = event->rwnd_size;
@@ -878,7 +888,7 @@ static __always_inline void ack_net_ep(struct net_event *event, struct context *
     // Total data yet to transmit 
     __s32 data_rest = ctx->data_end - ctx->send_next;
     if(data_rest == 0 && event->ack_seq == ctx->send_next) {
-        bpf_printk("All packets sent and received");
+       //bpf_printk("All packets sent and received");
         cancel_timer(event->ev_flow_id, ACK_TIMEOUT);
         return;
     }
@@ -887,6 +897,9 @@ static __always_inline void ack_net_ep(struct net_event *event, struct context *
     if(effective_window > ctx->last_rwnd_size)
         effective_window = ctx->last_rwnd_size;
     __u32 bytes_to_send = 0;
+
+    // Q: eBPF verifier works in mysterious ways
+    //bpf_printk("\nbytes: %d, ack_seq: %d", bytes_to_send, event->ack_seq); 
 
     // Fast retransmits the first unack packet
     if(ctx->duplicate_acks == 3) {
@@ -909,7 +922,7 @@ static __always_inline void ack_net_ep(struct net_event *event, struct context *
 
     // Total data to transmit between send_next and cwnd_size
     __s32 window_avail = ctx->send_una + effective_window - ctx->send_next;
-    bpf_printk("duplicate %d %d", ctx->duplicate_acks, effective_window);
+   //bpf_printk("duplicate %d %d", ctx->duplicate_acks, effective_window);
 
     if(window_avail < 0)
         return;
@@ -919,9 +932,6 @@ static __always_inline void ack_net_ep(struct net_event *event, struct context *
         else
             bytes_to_send = window_avail;
     }
-
-    bpf_printk("\nbytes: %d, ack_seq: %d, send_next: %d", bytes_to_send, event->ack_seq, ctx->send_next);
-    bpf_printk("\nCongestion window: %d, send_una: %d window avail %d", ctx->cwnd_size, ctx->send_una, window_avail);
     
     // Note: ceil seems to not be working properly
     //int num_to_send = ceil(ctx->cwnd_size / SMSS);
@@ -1048,7 +1058,7 @@ static __always_inline void data_net_ep(struct net_event *event, struct context 
             bpf_loop(MAX_NUM_CTX_PKT_INFO, remove_recv_buffer, &arg, 0);
 
             ctx->recv_next = arg.recv_next;
-            bpf_printk("TAIL: %d", ctx->data_recv_array_tail);
+           //bpf_printk("TAIL: %d", ctx->data_recv_array_tail);
         }
 
     } else {
@@ -1092,7 +1102,7 @@ static __always_inline void send_ack(struct net_event *event, struct context *ct
         if (bytes_to_send > SMSS)
             bytes_to_send = SMSS;
     }
-    bpf_printk("\nBYTES: %d\n", bytes_to_send);
+   //bpf_printk("\nBYTES: %d\n", bytes_to_send);
     
     if((void *)(long)redirect_pkt->data + sizeof(struct metadata_hdr) > (void *)(long)redirect_pkt->data_end)
         return;
@@ -1125,7 +1135,7 @@ static __always_inline void ack_timeout_ep(struct timer_event *event, struct con
     struct intermediate_output *inter_output, struct xdp_md *redirect_pkt) {
     // Resend packet
     // Q: similar problem as I had in app_event, but with timer_event seq_num. Had to change the order in struct definition
-    bpf_printk("SEND_NXT: %d, SEND_UNA: %d", ctx->send_next, ctx->send_una);
+   //bpf_printk("SEND_NXT: %d, SEND_UNA: %d", ctx->send_next, ctx->send_una);
     if(ctx->send_una == event->seq_num) {
         // Slow start after a timeout
         ctx->cwnd_size = SMSS * 3;
@@ -1149,17 +1159,19 @@ static __always_inline void ack_timeout_ep(struct timer_event *event, struct con
         __s32 window_avail = ctx->send_una + effective_window - ctx->send_next;
         __u32 bytes_to_send = 0;
 
-        if(window_avail < 0)
-            return;
-        else {
+        if(window_avail < 0) {
+            if(data_rest < effective_window)
+                bytes_to_send = data_rest;
+            else
+                bytes_to_send = effective_window;
+        } else {
             if(data_rest < window_avail)
                 bytes_to_send = data_rest;
             else
                 bytes_to_send = window_avail;
-            
-            if (bytes_to_send > SMSS)
-                bytes_to_send = SMSS;
         }
+        if (bytes_to_send > SMSS)
+            bytes_to_send = SMSS;
 
         if((void *)(long)redirect_pkt->data + sizeof(struct metadata_hdr) > (void *)(long)redirect_pkt->data_end)
             return;
@@ -1186,7 +1198,7 @@ static __always_inline void dispatcher(void * event, enum minor_event_type type,
     case SEND:
         //bpf_printk("SEND");
         send_ep(event, ctx, &inter_output, redirect_pkt);
-        bpf_printk("SEND");
+       //bpf_printk("SEND");
         break;
     
     case ACK:
@@ -1203,13 +1215,13 @@ static __always_inline void dispatcher(void * event, enum minor_event_type type,
         data_net_ep(event, ctx, &inter_output, redirect_pkt);
         send_ack(event, ctx, &inter_output, redirect_pkt);
         app_feedback_ep(event, ctx, &inter_output, redirect_pkt);
-        bpf_printk("DATA");
+       //bpf_printk("DATA");
         break;
     
     case MISS_ACK:
         //bpf_printk("MISS_ACK");
         ack_timeout_ep(event, ctx, &inter_output, redirect_pkt);
-        bpf_printk("MISS_ACK");
+       //bpf_printk("MISS_ACK");
         break;
     
     case PROG_TEST:
