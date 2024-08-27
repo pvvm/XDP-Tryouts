@@ -129,7 +129,7 @@ struct pkt_info temporary_default_info_send() {
     return info;
 }
 
-struct pkt_info temporary_default_info_rcv() {
+struct pkt_info temporary_default_info_rcv(int i) {
     struct pkt_info info;
 
     unsigned char src_mac[ETH_ALEN] = {0xE8, 0xEB, 0xD3, 0xA4, 0x89, 0x8B};
@@ -140,8 +140,8 @@ struct pkt_info temporary_default_info_rcv() {
     info.src_ip = inet_addr("192.168.4.244");
     info.dst_ip = inet_addr("192.168.4.231");
 
-    info.src_port = htons(3);
-    info.dst_port = htons(230);
+    info.src_port = htons(i);
+    info.dst_port = htons(i);
 
     return info;
 }

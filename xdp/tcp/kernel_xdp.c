@@ -285,7 +285,7 @@ static __always_inline __u8 mutate_pkt(struct xdp_md *redirect_pkt, struct net_e
 
     __builtin_memcpy(data, &new_hdr, sizeof(new_hdr));
 
-    bpf_xdp_adjust_tail(redirect_pkt, 2000);
+    bpf_xdp_adjust_tail(redirect_pkt, MUTATED_PACKET_SIZE);
 
     return ret;
 }
@@ -772,30 +772,36 @@ static __always_inline void send_ep(struct app_event *event, struct context *ctx
     initialize_timer(new_event, ctx->RTO, ACK_TIMEOUT);
 }
 
-static __always_inline void slows_congc_ep(struct net_event *event, struct context *ctx,
+static __always_inline void rto_ep(struct net_event *event, struct context *ctx,
     struct intermediate_output *inter_output, struct xdp_md *redirect_pkt) {
-    
+
     inter_output->skip_ack_eps = 0;
     // Q: eBPF verifier works in mysterious ways
     if(event->ack_seq < ctx->send_una || ctx->send_next < event->ack_seq) {
         inter_output->skip_ack_eps = 1;
         return;
     }
+    
 
-    if(inter_output->change_cwnd) {
-        // Slow start
-        if(ctx->cwnd_size < ctx->ssthresh) {
-            ctx->cwnd_size += SMSS;
-        }
-        // Congestion control
-        else {
-            int add_cwnd = SMSS * SMSS / ctx->cwnd_size;
-            if(add_cwnd == 0)
-                add_cwnd = 1;
-            // TODO: check if should use floor, ceil or nothing
-            ctx->cwnd_size += add_cwnd;
-        }
+    if(ctx->first_rto) {
+        ctx->SRTT = RTT;
+        ctx->RTTVAR = RTT / 2;
+        if(GRANULARITY_G >= 4 * ctx->RTTVAR)
+            ctx->RTO = ctx->SRTT + GRANULARITY_G;
+        else
+            ctx->RTO = ctx->SRTT + 4 * ctx->RTTVAR;
+
+        ctx->first_rto = 0;
+
+    } else {
+        ctx->RTTVAR = (1 - 1/4) * ctx->RTTVAR + 1/4 * llabs(ctx->SRTT - RTT);
+        ctx->SRTT = (1 - 1/8) * ctx->SRTT + 1/8 * RTT;
+        if(GRANULARITY_G >= 4 * ctx->RTTVAR)
+            ctx->RTO = ctx->SRTT + GRANULARITY_G;
+        else
+            ctx->RTO = ctx->SRTT + 4 * ctx->RTTVAR;
     }
+
 }
 
 static __always_inline void fast_retr_rec_ep(struct net_event *event, struct context *ctx,
@@ -843,33 +849,28 @@ static __always_inline void fast_retr_rec_ep(struct net_event *event, struct con
     }
 }
 
-static __always_inline void rto_ep(struct net_event *event, struct context *ctx,
+static __always_inline void slows_congc_ep(struct net_event *event, struct context *ctx,
     struct intermediate_output *inter_output, struct xdp_md *redirect_pkt) {
-
+    
     /*if(event->ack_seq < ctx->send_una || ctx->send_next < event->ack_seq)
         return;*/
     if(inter_output->skip_ack_eps)
         return;
 
-    if(ctx->first_rto) {
-        ctx->SRTT = RTT;
-        ctx->RTTVAR = RTT / 2;
-        if(GRANULARITY_G >= 4 * ctx->RTTVAR)
-            ctx->RTO = ctx->SRTT + GRANULARITY_G;
-        else
-            ctx->RTO = ctx->SRTT + 4 * ctx->RTTVAR;
-
-        ctx->first_rto = 0;
-
-    } else {
-        ctx->RTTVAR = (1 - 1/4) * ctx->RTTVAR + 1/4 * llabs(ctx->SRTT - RTT);
-        ctx->SRTT = (1 - 1/8) * ctx->SRTT + 1/8 * RTT;
-        if(GRANULARITY_G >= 4 * ctx->RTTVAR)
-            ctx->RTO = ctx->SRTT + GRANULARITY_G;
-        else
-            ctx->RTO = ctx->SRTT + 4 * ctx->RTTVAR;
+    if(inter_output->change_cwnd) {
+        // Slow start
+        if(ctx->cwnd_size < ctx->ssthresh) {
+            ctx->cwnd_size += SMSS;
+        }
+        // Congestion control
+        else {
+            int add_cwnd = SMSS * SMSS / ctx->cwnd_size;
+            if(add_cwnd == 0)
+                add_cwnd = 1;
+            // TODO: check if should use floor, ceil or nothing
+            ctx->cwnd_size += add_cwnd;
+        }
     }
-
 }
 
 static __always_inline void ack_net_ep(struct net_event *event, struct context *ctx,
@@ -906,6 +907,7 @@ static __always_inline void ack_net_ep(struct net_event *event, struct context *
         bytes_to_send = SMSS;
         if(bytes_to_send > effective_window)
             bytes_to_send = effective_window;
+        //bpf_printk("3rd DUPLICATE %d", bytes_to_send);
         if((void *)(long)redirect_pkt->data + sizeof(struct metadata_hdr) > (void *)(long)redirect_pkt->data_end)
             return;
         struct metadata_hdr *meta_hdr = (struct metadata_hdr *)(long)redirect_pkt->data;
@@ -925,7 +927,7 @@ static __always_inline void ack_net_ep(struct net_event *event, struct context *
    //bpf_printk("duplicate %d %d", ctx->duplicate_acks, effective_window);
 
     if(window_avail < 0)
-        return;
+        bytes_to_send = 0;
     else {
         if(data_rest < window_avail)
             bytes_to_send = data_rest;
@@ -1135,10 +1137,11 @@ static __always_inline void ack_timeout_ep(struct timer_event *event, struct con
     struct intermediate_output *inter_output, struct xdp_md *redirect_pkt) {
     // Resend packet
     // Q: similar problem as I had in app_event, but with timer_event seq_num. Had to change the order in struct definition
-   //bpf_printk("SEND_NXT: %d, SEND_UNA: %d", ctx->send_next, ctx->send_una);
-    if(ctx->send_una == event->seq_num) {
+    //bpf_printk("SEND_NXT: %d, SEND_UNA: %d", ctx->send_next, ctx->send_una);
+    if(ctx->send_una <= event->seq_num) {
+        //bpf_printk("EV_SEQ: %d", event->seq_num);
         // Slow start after a timeout
-        ctx->cwnd_size = SMSS * 3;
+        ctx->cwnd_size = SMSS;
 
         __u32 opt1 = (ctx->send_next - ctx->send_una) / 2;
         __u32 opt2 = 2 * SMSS;
@@ -1331,6 +1334,12 @@ static __always_inline int net_ev_process(struct xdp_md *redirect_pkt, struct fl
         bpf_printk("net_ev_process: Couldn't retrive ctx");
         return 0;
     }
+
+    // Saving cwnd_size to metadata_hdr (measure at userspace)
+    if((void *)(long)redirect_pkt->data + sizeof(struct metadata_hdr) > (void *)(long)redirect_pkt->data_end)
+        return 0;
+    struct metadata_hdr *meta_hdr = (struct metadata_hdr *)(long)redirect_pkt->data;
+    meta_hdr->cwnd_size = (*flow_context)->cwnd_size;
 
     if(ret == 1) // One network packet
         dispatcher(&net_ev[0], net_ev[0].event_type, *flow_context, redirect_pkt);

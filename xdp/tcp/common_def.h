@@ -2,17 +2,18 @@
 #define COMMON_DEF_H
 
 #define MAX_NUMBER_CORES 1
-#define MAX_NUMBER_FLOWS 20
+#define MAX_NUMBER_FLOWS 2000
 #define MAX_EVENT_QUEUE_LEN 50
 #define MAX_NUM_PROCESSED_EVENTS 10
 #define MAX_NUMBER_TIMERS 10
 #define NO_TIMER_AVAILABLE 999999
-#define MAX_NUMBER_PROG_EVENTS 10
+#define MAX_NUMBER_PROG_EVENTS 5000
 #define MAX_NUM_NET_METADATA 20
 #define IS_NET_METADATA 0
 #define IS_APP_METADATA 1
 #define MAX_NUM_CTX_PKT_INFO 500
 #define MAX_NET_EVENTS 2
+#define MUTATED_PACKET_SIZE 2000
 
 #define SMSS 1440
 #define RTT 100000000 // 100ms
@@ -210,6 +211,7 @@ struct metadata_hdr {
     __be16 dst_port;
     __u16 data_len;
     __u16 metadata_end;
+    __u32 cwnd_size;
 };
 
 struct app_metadata {

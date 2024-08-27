@@ -39,7 +39,7 @@
 #include "create_packet.h"
 #include "idle_flow_list.h"
 
-#define NUM_FRAMES         	4096
+#define NUM_FRAMES         	40960
 #define FRAME_SIZE         	XSK_UMEM__DEFAULT_FRAME_SIZE
 #define RX_BATCH_SIZE     	64
 #define INVALID_UMEM_FRAME 	UINT64_MAX
@@ -50,10 +50,17 @@
 
 #define BUFFER_SIZE			1440000000
 
+#define NUM_FLOWS_TEST		100
+
 static const char *default_filename = "kernel_xdp.o";
 
 static const char *default_progname = "net_arrive";
 
+int cwnd_size[9999999];
+clock_t last_clock;
+int counter_cwnd_ex = 0;
+clock_t start_time[NUM_FLOWS_TEST], end_time[NUM_FLOWS_TEST];
+clock_t curr_clock[9999999];
 int packets_per_core[MAX_NUMBER_CORES];
 
 static struct xdp_program *prog;
@@ -67,8 +74,6 @@ char *recv_buffer[MAX_NUMBER_CORES];
 struct req_queue_v2 cpu_req_queues_v2[MAX_NUMBER_CORES];
 
 pthread_mutex_t worker_lock[MAX_NUMBER_CORES];
-
-clock_t start_time, end_time;
 
 struct config cfg = {
 	.ifindex   = -1,
@@ -378,7 +383,6 @@ static bool submit_multiple_pkts(struct xsk_socket_info *xsk, struct metadata_hd
 		frame_address[i] = xsk_alloc_umem_frame(xsk);
 		area_mem[i] = xsk_umem__get_data(xsk->umem->buffer, frame_address[i]);
 		if(!area_mem[i]) {
-			printf("OIE\n");
 			for(int j = 0; j <= i; j++)
 				xsk_free_umem_frame(xsk, frame_address[j]);
 			return false;
@@ -431,7 +435,9 @@ void write_data_to_buffer(int cpu_id, struct app_metadata *array_app_meta[],
 static bool process_packet(uint8_t *pkt, struct xsk_socket_info *xsk) {
 
 	if (pkt) {
+		//printf("FREE: %d", xsk->umem_frame_free);
 		struct metadata_hdr *meta_hdr = (struct metadata_hdr *) pkt;
+
 		//unsigned char data[1500];
 		unsigned char data[meta_hdr->data_len];
 		memcpy(data, pkt + sizeof(struct metadata_hdr), meta_hdr->data_len);
@@ -465,16 +471,24 @@ static bool process_packet(uint8_t *pkt, struct xsk_socket_info *xsk) {
 				counter_net_meta++;
 
 				if(net_meta->seq_num + net_meta->data_len == BUFFER_SIZE) {
-					end_time = clock();
+					end_time[ntohs(meta_hdr->src_port)] = clock();
 				}
 				if(net_meta->seq_num == 0) {
-					start_time = clock();
+					start_time[ntohs(meta_hdr->src_port)] = clock();
 				}
 			} else {
 				printf("Invalid metadata\n");
 				return false;
 			}
 		}
+
+		/*clock_t curr = clock();
+		if(curr - last_clock > 2000) {
+			cwnd_size[counter_cwnd_ex] = meta_hdr->cwnd_size;
+			curr_clock[counter_cwnd_ex] = curr;
+			last_clock = curr;
+			counter_cwnd_ex++;
+		}*/
 
 		if(counter_app_meta > 0)
 			write_data_to_buffer(xsk->cpu_id, array_app_meta, counter_app_meta, data);
@@ -840,7 +854,7 @@ int set_initial_ctx_values(struct flow_id f_id, int context_fd) {
 	new_ctx.last_ack = 4294967295;
 	new_ctx.duplicate_acks = 0;
 	new_ctx.flightsize_dupl = 0;
-	new_ctx.ssthresh = 16959;
+	new_ctx.ssthresh = 5000000;
 	new_ctx.cwnd_size = 3 * SMSS;
 
 	new_ctx.RTO = ONE_SECOND;
@@ -902,27 +916,41 @@ int set_mom_flow_entry(struct flow_id f_id, int *map_fds) {
 
 void distribute_requests(int *map_fds, int context_fd, int flow_info_fd, int tail_map_fd) {
 
-	struct pkt_info p_info = temporary_default_info_rcv();
-	struct flow_id f_id = convert_pktinfo_to_flow_id(p_info);
 	init_idle_flow_array();
-	//printf("%d %d %d %d\n", f_id.src_ip, f_id.dest_ip, f_id.src_port, f_id.dest_port);
-
-	// Initialize maps and arrays of a flow
-	if(!set_mom_flow_entry(f_id, map_fds))
-		return;
-	if(!set_initial_ctx_values(f_id, context_fd))
-		return;
-	// Note: at the moment I'm always setting the idle flow info to CPU 0 array,
-	// but we'll vary when we are able to know to which CPU a flow should go
-	if(!set_initial_queue_flow_info(f_id, p_info, flow_info_fd, 0))
-		return;
-	if(!set_initial_app_queue_tail(f_id, tail_map_fd))
-		return;
-
 	init_queue_v2(cpu_req_queues_v2);
 
+	struct flow_id f_id_array[NUM_FLOWS_TEST];
+
+	for(int i = 0; i < NUM_FLOWS_TEST; i++) {
+		struct pkt_info p_info = temporary_default_info_rcv(i);
+		struct flow_id f_id = convert_pktinfo_to_flow_id(p_info);
+		//printf("%d %d %d %d\n", f_id.src_ip, f_id.dest_ip, f_id.src_port, f_id.dest_port);
+
+		// Initialize maps and arrays of a flow
+		if(!set_mom_flow_entry(f_id, map_fds))
+			return;
+		if(!set_initial_ctx_values(f_id, context_fd))
+			return;
+		// Note: at the moment I'm always setting the idle flow info to CPU 0 array,
+		// but we'll vary when we are able to know to which CPU a flow should go
+		if(!set_initial_queue_flow_info(f_id, p_info, flow_info_fd, 0))
+			return;
+		if(!set_initial_app_queue_tail(f_id, tail_map_fd))
+			return;
+
+		f_id_array[i] = f_id;
+	}
+
+	//sleep(1000000000);
+
+	for(int i = 0; i < NUM_FLOWS_TEST; i++) {
+		struct app_event event = {SEND, f_id_array[i], BUFFER_SIZE, 1};
+		int cpu_to_send = 0;
+		req_enqueue_v2(&cpu_req_queues_v2[cpu_to_send], event);
+	}
+
 	// Note: at this moment the flow_id is fixed to this one
-	struct app_event event = {SEND, f_id, BUFFER_SIZE, 1};
+	/*struct app_event event = {SEND, f_id, BUFFER_SIZE, 1};
 	int cpu_to_send = 0;
 	while(1) {
 		if(!scanf("%d", &cpu_to_send))
@@ -934,7 +962,8 @@ void distribute_requests(int *map_fds, int context_fd, int flow_info_fd, int tai
 		req_enqueue_v2(&cpu_req_queues_v2[cpu_to_send], event);
 		//print_queue(cpu_req_queues);
 		print_queue_v2(cpu_req_queues_v2);
-	}
+	}*/
+	
 	//free_queue(cpu_req_queues);
 }
 
@@ -1195,8 +1224,16 @@ int main(int argc, char **argv)
 		free(recv_buffer[i]);
 	}
 
-	double time_spent = (double)(end_time - start_time) / CLOCKS_PER_SEC;
-	printf("Time taken: %f seconds\n", time_spent);
+	for(int i = 0; i < NUM_FLOWS_TEST; i++) {
+		double time_spent = (double)(end_time[i] - start_time[i]) / CLOCKS_PER_SEC;
+		printf("Time taken for flow %d: %f seconds\n", i, time_spent);
+	}
+
+	/*FILE *file = fopen("cwnd_size.txt", "w");
+	for(int i = 0; i < counter_cwnd_ex; i++) {
+		fprintf(file, "%f %d\n", (double)(curr_clock[i] - start_time) / CLOCKS_PER_SEC, cwnd_size[i]);
+	}
+	fclose(file);*/
 
 	return EXIT_OK;
 }
