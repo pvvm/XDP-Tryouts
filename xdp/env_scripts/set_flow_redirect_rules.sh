@@ -21,9 +21,9 @@ dst_ip_icelake2="192.168.4.244"
 set_rules() {
     local src_ip=$1
     local dst_ip=$2
-    for port in $(seq 1 $max_rules); do
+    for port in $(seq 0 $max_rules); do
         # Calculate RX queue based on port number and rx_queues
-        rx_queue=$(( (port - 1) % rx_queues ))
+        rx_queue=$(( port % rx_queues ))
         
         # Configure ethtool rule with the calculated RX queue
         ethtool --config-ntuple $interface flow-type tcp4 \
