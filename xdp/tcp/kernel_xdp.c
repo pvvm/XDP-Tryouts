@@ -18,7 +18,6 @@
 #include "common_def.h"
 
 #define ONE_SEC 1000000000
-#define TEN_SEC 10000000000
 
 
 // From benchmark: to remove later
@@ -733,19 +732,19 @@ static __always_inline void send_ep(struct app_event *event, struct context *ctx
     ctx->data_end += event->data_size;
  
     // Total data yet to transmit 
-    __s32 data_rest = ctx->data_end - ctx->send_next;
+    __u32 data_rest = ctx->data_end - ctx->send_next;
 
     __u32 effective_window = ctx->cwnd_size;
     if(effective_window > ctx->last_rwnd_size)
         effective_window = ctx->last_rwnd_size;
 
     // Total data to transmit between send_next and cwnd_size
-    __s32 window_avail = ctx->send_una + effective_window - ctx->send_next;
     __u32 bytes_to_send = 0;
 
-    if(window_avail < 0)
+    if(ctx->send_una + effective_window < ctx->send_next)
         return;
     else {
+        __u32 window_avail = ctx->send_una + effective_window - ctx->send_next;
         if(data_rest < window_avail)
             bytes_to_send = data_rest;
         else
@@ -772,36 +771,30 @@ static __always_inline void send_ep(struct app_event *event, struct context *ctx
     initialize_timer(new_event, ctx->RTO, ACK_TIMEOUT);
 }
 
-static __always_inline void rto_ep(struct net_event *event, struct context *ctx,
+static __always_inline void slows_congc_ep(struct net_event *event, struct context *ctx,
     struct intermediate_output *inter_output, struct xdp_md *redirect_pkt) {
-
+    
     inter_output->skip_ack_eps = 0;
     // Q: eBPF verifier works in mysterious ways
     if(event->ack_seq < ctx->send_una || ctx->send_next < event->ack_seq) {
         inter_output->skip_ack_eps = 1;
         return;
     }
-    
 
-    if(ctx->first_rto) {
-        ctx->SRTT = RTT;
-        ctx->RTTVAR = RTT / 2;
-        if(GRANULARITY_G >= 4 * ctx->RTTVAR)
-            ctx->RTO = ctx->SRTT + GRANULARITY_G;
-        else
-            ctx->RTO = ctx->SRTT + 4 * ctx->RTTVAR;
-
-        ctx->first_rto = 0;
-
-    } else {
-        ctx->RTTVAR = (1 - 1/4) * ctx->RTTVAR + 1/4 * llabs(ctx->SRTT - RTT);
-        ctx->SRTT = (1 - 1/8) * ctx->SRTT + 1/8 * RTT;
-        if(GRANULARITY_G >= 4 * ctx->RTTVAR)
-            ctx->RTO = ctx->SRTT + GRANULARITY_G;
-        else
-            ctx->RTO = ctx->SRTT + 4 * ctx->RTTVAR;
+    if(inter_output->change_cwnd) {
+        // Slow start
+        if(ctx->cwnd_size < ctx->ssthresh) {
+            ctx->cwnd_size += SMSS;
+        }
+        // Congestion control
+        else {
+            int add_cwnd = SMSS * SMSS / ctx->cwnd_size;
+            if(add_cwnd == 0)
+                add_cwnd = 1;
+            // TODO: check if should use floor, ceil or nothing
+            ctx->cwnd_size += add_cwnd;
+        }
     }
-
 }
 
 static __always_inline void fast_retr_rec_ep(struct net_event *event, struct context *ctx,
@@ -849,28 +842,33 @@ static __always_inline void fast_retr_rec_ep(struct net_event *event, struct con
     }
 }
 
-static __always_inline void slows_congc_ep(struct net_event *event, struct context *ctx,
+static __always_inline void rto_ep(struct net_event *event, struct context *ctx,
     struct intermediate_output *inter_output, struct xdp_md *redirect_pkt) {
-    
+
     /*if(event->ack_seq < ctx->send_una || ctx->send_next < event->ack_seq)
         return;*/
     if(inter_output->skip_ack_eps)
         return;
 
-    if(inter_output->change_cwnd) {
-        // Slow start
-        if(ctx->cwnd_size < ctx->ssthresh) {
-            ctx->cwnd_size += SMSS;
-        }
-        // Congestion control
-        else {
-            int add_cwnd = SMSS * SMSS / ctx->cwnd_size;
-            if(add_cwnd == 0)
-                add_cwnd = 1;
-            // TODO: check if should use floor, ceil or nothing
-            ctx->cwnd_size += add_cwnd;
-        }
+    if(ctx->first_rto) {
+        ctx->SRTT = RTT;
+        ctx->RTTVAR = RTT / 2;
+        if(GRANULARITY_G >= 4 * ctx->RTTVAR)
+            ctx->RTO = ctx->SRTT + GRANULARITY_G;
+        else
+            ctx->RTO = ctx->SRTT + 4 * ctx->RTTVAR;
+
+        ctx->first_rto = 0;
+
+    } else {
+        ctx->RTTVAR = (1 - 1/4) * ctx->RTTVAR + 1/4 * llabs(ctx->SRTT - RTT);
+        ctx->SRTT = (1 - 1/8) * ctx->SRTT + 1/8 * RTT;
+        if(GRANULARITY_G >= 4 * ctx->RTTVAR)
+            ctx->RTO = ctx->SRTT + GRANULARITY_G;
+        else
+            ctx->RTO = ctx->SRTT + 4 * ctx->RTTVAR;
     }
+
 }
 
 static __always_inline void ack_net_ep(struct net_event *event, struct context *ctx,
@@ -887,7 +885,7 @@ static __always_inline void ack_net_ep(struct net_event *event, struct context *
     ctx->send_una = event->ack_seq;
 
     // Total data yet to transmit 
-    __s32 data_rest = ctx->data_end - ctx->send_next;
+    __u32 data_rest = ctx->data_end - ctx->send_next;
     if(data_rest == 0 && event->ack_seq == ctx->send_next) {
        //bpf_printk("All packets sent and received");
         cancel_timer(event->ev_flow_id, ACK_TIMEOUT);
@@ -907,7 +905,6 @@ static __always_inline void ack_net_ep(struct net_event *event, struct context *
         bytes_to_send = SMSS;
         if(bytes_to_send > effective_window)
             bytes_to_send = effective_window;
-        //bpf_printk("3rd DUPLICATE %d", bytes_to_send);
         if((void *)(long)redirect_pkt->data + sizeof(struct metadata_hdr) > (void *)(long)redirect_pkt->data_end)
             return;
         struct metadata_hdr *meta_hdr = (struct metadata_hdr *)(long)redirect_pkt->data;
@@ -923,12 +920,12 @@ static __always_inline void ack_net_ep(struct net_event *event, struct context *
     }
 
     // Total data to transmit between send_next and cwnd_size
-    __s32 window_avail = ctx->send_una + effective_window - ctx->send_next;
    //bpf_printk("duplicate %d %d", ctx->duplicate_acks, effective_window);
 
-    if(window_avail < 0)
-        bytes_to_send = 0;
+    if(ctx->send_una + effective_window < ctx->send_next)
+        return;
     else {
+        __u32 window_avail = ctx->send_una + effective_window - ctx->send_next;
         if(data_rest < window_avail)
             bytes_to_send = data_rest;
         else
@@ -1083,19 +1080,19 @@ static __always_inline void send_ack(struct net_event *event, struct context *ct
     struct intermediate_output *inter_output, struct xdp_md *redirect_pkt) {
 
     // Total data yet to transmit 
-    __s32 data_rest = ctx->data_end - ctx->send_next;
+    __u32 data_rest = ctx->data_end - ctx->send_next;
 
     __u32 effective_window = ctx->cwnd_size;
     if(effective_window > ctx->last_rwnd_size)
         effective_window = ctx->last_rwnd_size;
 
     // Total data to transmit between send_next and cwnd_size
-    __s32 window_avail = ctx->send_una + effective_window - ctx->send_next;
     __u32 bytes_to_send = 0;
 
-    if(window_avail < 0)
+    if(ctx->send_una + effective_window < ctx->send_next)
         return;
     else {
+        __u32 window_avail = ctx->send_una + effective_window - ctx->send_next;
         if(data_rest < window_avail)
             bytes_to_send = data_rest;
         else
@@ -1137,11 +1134,10 @@ static __always_inline void ack_timeout_ep(struct timer_event *event, struct con
     struct intermediate_output *inter_output, struct xdp_md *redirect_pkt) {
     // Resend packet
     // Q: similar problem as I had in app_event, but with timer_event seq_num. Had to change the order in struct definition
-    //bpf_printk("SEND_NXT: %d, SEND_UNA: %d", ctx->send_next, ctx->send_una);
-    if(ctx->send_una <= event->seq_num) {
-        //bpf_printk("EV_SEQ: %d", event->seq_num);
+   //bpf_printk("SEND_NXT: %d, SEND_UNA: %d", ctx->send_next, ctx->send_una);
+    if(ctx->send_una == event->seq_num) {
         // Slow start after a timeout
-        ctx->cwnd_size = SMSS;
+        ctx->cwnd_size = SMSS * 3;
 
         __u32 opt1 = (ctx->send_next - ctx->send_una) / 2;
         __u32 opt2 = 2 * SMSS;
@@ -1152,22 +1148,22 @@ static __always_inline void ack_timeout_ep(struct timer_event *event, struct con
 
         // Q: is this right? Since we are retransmitting something, I think it would make sense
         // to use send_una instead of send_next
-        __s32 data_rest = ctx->data_end - ctx->send_una;
+        __u32 data_rest = ctx->data_end - ctx->send_una;
 
         __u32 effective_window = ctx->cwnd_size;
         if(effective_window > ctx->last_rwnd_size)
             effective_window = ctx->last_rwnd_size;
 
         // Total data to transmit between send_next and cwnd_size
-        __s32 window_avail = ctx->send_una + effective_window - ctx->send_next;
         __u32 bytes_to_send = 0;
 
-        if(window_avail < 0) {
+        if(ctx->send_una + effective_window < ctx->send_next) {
             if(data_rest < effective_window)
                 bytes_to_send = data_rest;
             else
                 bytes_to_send = effective_window;
         } else {
+            __u32 window_avail = ctx->send_una + effective_window - ctx->send_next;
             if(data_rest < window_avail)
                 bytes_to_send = data_rest;
             else

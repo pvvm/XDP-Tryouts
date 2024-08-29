@@ -50,7 +50,7 @@
 
 #define BUFFER_SIZE			1440000000
 
-#define NUM_FLOWS_TEST		100
+#define NUM_FLOWS_TEST		32
 
 static const char *default_filename = "kernel_xdp.o";
 
@@ -59,7 +59,8 @@ static const char *default_progname = "net_arrive";
 int cwnd_size[9999999];
 clock_t last_clock;
 int counter_cwnd_ex = 0;
-clock_t start_time[NUM_FLOWS_TEST], end_time[NUM_FLOWS_TEST];
+struct timespec start_per_flow[NUM_FLOWS_TEST], end_per_flow[NUM_FLOWS_TEST];
+//clock_t start_time[NUM_FLOWS_TEST], end_time[NUM_FLOWS_TEST];
 clock_t curr_clock[9999999];
 int packets_per_core[MAX_NUMBER_CORES];
 
@@ -471,10 +472,10 @@ static bool process_packet(uint8_t *pkt, struct xsk_socket_info *xsk) {
 				counter_net_meta++;
 
 				if(net_meta->seq_num + net_meta->data_len == BUFFER_SIZE) {
-					end_time[ntohs(meta_hdr->src_port)] = clock();
+					clock_gettime(CLOCK_MONOTONIC, &end_per_flow[ntohs(meta_hdr->src_port)]);
 				}
 				if(net_meta->seq_num == 0) {
-					start_time[ntohs(meta_hdr->src_port)] = clock();
+					clock_gettime(CLOCK_MONOTONIC, &start_per_flow[ntohs(meta_hdr->src_port)]);
 				}
 			} else {
 				printf("Invalid metadata\n");
@@ -1225,7 +1226,8 @@ int main(int argc, char **argv)
 	}
 
 	for(int i = 0; i < NUM_FLOWS_TEST; i++) {
-		double time_spent = (double)(end_time[i] - start_time[i]) / CLOCKS_PER_SEC;
+		double time_spent = end_per_flow[i].tv_sec - start_per_flow[i].tv_sec;
+		time_spent += (end_per_flow[i].tv_nsec - start_per_flow[i].tv_nsec) / 1000000000.0;
 		printf("Time taken for flow %d: %f seconds\n", i, time_spent);
 	}
 
