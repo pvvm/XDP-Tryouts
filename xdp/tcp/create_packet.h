@@ -112,7 +112,7 @@ struct pkt_info set_pkt_info(struct metadata_hdr meta_hdr, struct net_metadata m
 
 /* This is a temporary function, that will be used temporarily to set 
 default values to headers*/
-struct pkt_info temporary_default_info_send() {
+struct pkt_info temporary_default_info_send(int i) {
     struct pkt_info info;
 
     unsigned char src_mac[ETH_ALEN] = {0x08, 0xC0, 0xEB, 0x96, 0x85, 0x85};
@@ -123,8 +123,8 @@ struct pkt_info temporary_default_info_send() {
     info.src_ip = inet_addr("192.168.4.231");
     info.dst_ip = inet_addr("192.168.4.244");
 
-    info.src_port = htons(230);
-    info.dst_port = htons(3);
+    info.src_port = htons(i);
+    info.dst_port = htons(i);
 
     return info;
 }
@@ -167,19 +167,23 @@ struct flow_id convert_pktinfo_to_flow_id(struct pkt_info p_info) {
     dst_ip = ((daddr >> 24) & 0xFF) ^ dst_ip;
 	f_id.dest_ip = dst_ip;
 
-	//__be16 sport = ntohs(p_info.dst_port);
-    __be16 sport = ntohs(p_info.src_port);
+    /*__be16 sport = ntohs(p_info.src_port);
 	__u8 src_port;
     src_port = sport & 0xFF;
     src_port = ((sport >> 8) & 0xFF) ^ src_port;
 	f_id.src_port = src_port;
 
-	//__be16 dport = ntohs(p_info.src_port);
     __be16 dport = ntohs(p_info.dst_port);
 	__u8 dst_port;
     dst_port = dport & 0xFF;
     dst_port = ((dport >> 8) & 0xFF) ^ dst_port;
-	f_id.dest_port = dst_port;
+	f_id.dest_port = dst_port;*/
+
+    __be16 sport = ntohs(p_info.src_port);
+    __be16 dport = ntohs(p_info.dst_port);
+    __be16 sum = sport + dport;
+    f_id.src_port = (sum >> 8) & 0xFF;
+    f_id.dest_port = sum & 0xFF;
 
     return f_id;
 }

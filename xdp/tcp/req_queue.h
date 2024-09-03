@@ -88,7 +88,7 @@ void print_queue(struct req_queue *queue) {
 // https://www.codeproject.com/Articles/43510/Lock-Free-Single-Producer-Single-Consumer-Circular#heading_acquire_release_model
 
 struct req_queue_v2 {
-    struct app_event req_queue[MAX_NUMBER_PROG_EVENTS];
+    struct app_event req_queue[MAX_EVENT_QUEUE_LEN];
     atomic_uint head;
     atomic_uint tail;
 };
@@ -102,7 +102,7 @@ void init_queue_v2(struct req_queue_v2 *queue) {
 
 void req_enqueue_v2(struct req_queue_v2 *queue, struct app_event event) {
     atomic_uint curr_tail = atomic_load_explicit(&queue->tail, memory_order_relaxed);
-    atomic_uint next_tail = (curr_tail + 1) % MAX_NUMBER_PROG_EVENTS;
+    atomic_uint next_tail = (curr_tail + 1) % MAX_EVENT_QUEUE_LEN;
     if(next_tail != atomic_load_explicit(&queue->head, memory_order_acquire)) {
         queue->req_queue[curr_tail] = event;
         atomic_store_explicit(&queue->tail, next_tail, memory_order_release);
@@ -114,7 +114,7 @@ void req_enqueue_v2(struct req_queue_v2 *queue, struct app_event event) {
 
 void req_dequeue_v2(struct req_queue_v2 *queue) {
     atomic_uint curr_head = atomic_load_explicit(&queue->head, memory_order_relaxed);
-    atomic_uint next_head = (curr_head + 1) % MAX_NUMBER_PROG_EVENTS;
+    atomic_uint next_head = (curr_head + 1) % MAX_EVENT_QUEUE_LEN;
     if(curr_head != atomic_load_explicit(&queue->tail, memory_order_acquire)) {
         atomic_store_explicit(&queue->head, next_head, memory_order_release);
         return;
@@ -137,7 +137,7 @@ void print_queue_v2(struct req_queue_v2 *queue) {
         printf("\nCPU %d: ", i);
         while(curr_head != atomic_load_explicit(&queue[i].tail, memory_order_relaxed)) {
             printf("%d ", queue[i].req_queue[curr_head].data_size);
-            curr_head = (curr_head + 1) % MAX_NUMBER_PROG_EVENTS;
+            curr_head = (curr_head + 1) % MAX_EVENT_QUEUE_LEN;
         }
     }
     printf("\n");

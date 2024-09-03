@@ -8,11 +8,21 @@ set_affinity() {
     local start_irq=$1
     local end_irq=$2
     local affinity=0
+    local iteration_count=0
 
     for irq in $(seq $start_irq $end_irq); do
         echo $affinity > /proc/irq/$irq/smp_affinity_list
         echo "IRQ $irq smp_affinity_list set to $affinity"
-        affinity=$(( (affinity + 1) % 63 ))
+        
+        iteration_count=$((iteration_count + 1))
+
+        affinity=$((affinity + 1))
+
+        # After the 10th iteration, increase affinity by 10 only once
+        if [ "$iteration_count" -eq 10 ]; then
+            affinity=$((affinity + 10))
+            echo "Increased affinity by 10 after 10th iteration"
+        fi
     done
 }
 

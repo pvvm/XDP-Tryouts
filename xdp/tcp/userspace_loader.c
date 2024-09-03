@@ -39,7 +39,7 @@
 #include "create_packet.h"
 #include "idle_flow_list.h"
 
-#define NUM_FRAMES         	40960
+#define NUM_FRAMES         	409600
 #define FRAME_SIZE         	XSK_UMEM__DEFAULT_FRAME_SIZE
 #define RX_BATCH_SIZE     	64
 #define INVALID_UMEM_FRAME 	UINT64_MAX
@@ -50,7 +50,7 @@
 
 #define BUFFER_SIZE			1440000000
 
-#define NUM_FLOWS_TEST		32
+#define NUM_FLOWS_TEST		(150)
 
 static const char *default_filename = "kernel_xdp.o";
 
@@ -63,6 +63,11 @@ struct timespec start_per_flow[NUM_FLOWS_TEST], end_per_flow[NUM_FLOWS_TEST];
 //clock_t start_time[NUM_FLOWS_TEST], end_time[NUM_FLOWS_TEST];
 clock_t curr_clock[9999999];
 int packets_per_core[MAX_NUMBER_CORES];
+int packets_per_flow[NUM_FLOWS_TEST];
+struct timespec all_finished_time;
+struct timespec init_time;
+int finished_counter = 0;
+int first_among_flows = 1;
 
 static struct xdp_program *prog;
 int xsk_map_fd;
@@ -435,9 +440,10 @@ void write_data_to_buffer(int cpu_id, struct app_metadata *array_app_meta[],
 
 static bool process_packet(uint8_t *pkt, struct xsk_socket_info *xsk) {
 
-	if (pkt) {
+	if(pkt) {
 		//printf("FREE: %d", xsk->umem_frame_free);
 		struct metadata_hdr *meta_hdr = (struct metadata_hdr *) pkt;
+		//printf("%d\n", xsk->umem_frame_free);
 
 		//unsigned char data[1500];
 		unsigned char data[meta_hdr->data_len];
@@ -471,11 +477,18 @@ static bool process_packet(uint8_t *pkt, struct xsk_socket_info *xsk) {
 				array_net_meta[counter_net_meta] = net_meta;
 				counter_net_meta++;
 
-				if(net_meta->seq_num + net_meta->data_len == BUFFER_SIZE) {
+				if(net_meta->seq_num + net_meta->data_len >= BUFFER_SIZE - 100) {
 					clock_gettime(CLOCK_MONOTONIC, &end_per_flow[ntohs(meta_hdr->src_port)]);
+					finished_counter++;
+					if(finished_counter == NUM_FLOWS_TEST)
+						clock_gettime(CLOCK_MONOTONIC, &all_finished_time);
 				}
 				if(net_meta->seq_num == 0) {
 					clock_gettime(CLOCK_MONOTONIC, &start_per_flow[ntohs(meta_hdr->src_port)]);
+				}
+				if(net_meta->seq_num == 0 && first_among_flows) {
+					clock_gettime(CLOCK_MONOTONIC, &init_time);
+					first_among_flows = 0;
 				}
 			} else {
 				printf("Invalid metadata\n");
@@ -494,6 +507,7 @@ static bool process_packet(uint8_t *pkt, struct xsk_socket_info *xsk) {
 		if(counter_app_meta > 0)
 			write_data_to_buffer(xsk->cpu_id, array_app_meta, counter_app_meta, data);
 
+		packets_per_flow[ntohs(meta_hdr->src_port)] += counter_net_meta;
 		return submit_multiple_pkts(xsk, meta_hdr, array_net_meta, counter_net_meta);
 	}
 
@@ -574,7 +588,7 @@ static void send_packet_directly(struct xsk_socket_info *xsk) {
 	unsigned char pkt[1500];
     size_t data_len = 0;
     
-    struct pkt_info p_info = temporary_default_info_send();
+    struct pkt_info p_info = temporary_default_info_send(0);
     create_packet(pkt, &data_len, p_info, NULL, NULL);
 	//printf("\n%lu", data_len);
 
@@ -626,19 +640,6 @@ void produce_app_events(int cpu_id, int outer_map_fd, int tail_map_fd,
 	struct app_event* new_entry = read_first_req_v2(&cpu_req_queues_v2[cpu_id], &curr_head);
 	if(new_entry == NULL/* || curr_head == *last_head*/)
 		return;
-
-	// Question: where should we add new entries? In the main thread, when a flow is established,
-	// or here in the worker thread?
-	// Add new entry to idle flow info
-	/*if(!find_idle_flow_info(cpu_id, req_info->event.ev_flow_id)) {
-		struct queue_flow_info f_info;
-		err = bpf_map_lookup_elem(flow_info_fd, &new_entry->ev_flow_id, &f_info);
-		if(err < 0) {
-			printf("Couldn't find entry from queue flow info map\n");
-			return;
-		}
-		add_idle_flow_info(cpu_id, *req_info, f_info);
-	}*/
 
 	*last_head = curr_head;
 
@@ -922,6 +923,7 @@ void distribute_requests(int *map_fds, int context_fd, int flow_info_fd, int tai
 
 	struct flow_id f_id_array[NUM_FLOWS_TEST];
 
+	int cpu_to_send = 0;
 	for(int i = 0; i < NUM_FLOWS_TEST; i++) {
 		struct pkt_info p_info = temporary_default_info_rcv(i);
 		struct flow_id f_id = convert_pktinfo_to_flow_id(p_info);
@@ -932,22 +934,23 @@ void distribute_requests(int *map_fds, int context_fd, int flow_info_fd, int tai
 			return;
 		if(!set_initial_ctx_values(f_id, context_fd))
 			return;
-		// Note: at the moment I'm always setting the idle flow info to CPU 0 array,
-		// but we'll vary when we are able to know to which CPU a flow should go
-		if(!set_initial_queue_flow_info(f_id, p_info, flow_info_fd, 0))
+		if(!set_initial_queue_flow_info(f_id, p_info, flow_info_fd, cpu_to_send))
 			return;
 		if(!set_initial_app_queue_tail(f_id, tail_map_fd))
 			return;
 
 		f_id_array[i] = f_id;
+		cpu_to_send = (cpu_to_send + 1) % MAX_NUMBER_CORES;
 	}
 
 	//sleep(1000000000);
 
+	cpu_to_send = 0;
 	for(int i = 0; i < NUM_FLOWS_TEST; i++) {
 		struct app_event event = {SEND, f_id_array[i], BUFFER_SIZE, 1};
-		int cpu_to_send = 0;
+
 		req_enqueue_v2(&cpu_req_queues_v2[cpu_to_send], event);
+		cpu_to_send = (cpu_to_send + 1) % MAX_NUMBER_CORES;
 	}
 
 	// Note: at this moment the flow_id is fixed to this one
@@ -1004,16 +1007,16 @@ static void exit_application(int signal)
 
 	signal = signal;
 	global_exit = true;
-
-	int pkt_sum = 0;
-	for(int i = 0; i < MAX_NUMBER_CORES; i++) {
-		pkt_sum += packets_per_core[i];
-	}
-	printf("Total num packets sent: %d\n", pkt_sum);
 }
 
 int main(int argc, char **argv)
 {
+	cpu_set_t set;
+	CPU_ZERO(&set);        // clear cpu mask
+	CPU_SET(20, &set);      // set cpu 0
+	sched_setaffinity(0, sizeof(cpu_set_t), &set);
+	printf("%d\n", sched_getcpu());
+
 	//int ret;
 	void *packet_buffer[MAX_NUMBER_CORES];
 	uint64_t packet_buffer_size;
@@ -1225,17 +1228,45 @@ int main(int argc, char **argv)
 		free(recv_buffer[i]);
 	}
 
+	double average_time_per_core[MAX_NUMBER_CORES];
+	for(int i = 0; i < MAX_NUMBER_CORES; i++)
+		average_time_per_core[i] = 0;
+
+	double average_time_total = 0;
+	int j = 0;
 	for(int i = 0; i < NUM_FLOWS_TEST; i++) {
 		double time_spent = end_per_flow[i].tv_sec - start_per_flow[i].tv_sec;
 		time_spent += (end_per_flow[i].tv_nsec - start_per_flow[i].tv_nsec) / 1000000000.0;
 		printf("Time taken for flow %d: %f seconds\n", i, time_spent);
+		average_time_per_core[j] += time_spent;
+		j = (j + 1) % MAX_NUMBER_CORES;
+		average_time_total += time_spent;
 	}
+	printf("\n--------------------\n");
+	for(int i = 0; i < MAX_NUMBER_CORES; i++) {
+		printf("Average time taken for core %d: %f seconds\n", i, average_time_per_core[i] / (NUM_FLOWS_TEST / MAX_NUMBER_CORES));
+	}
+	printf("\n--------------------\n");
+	printf("Average time taken in total: %f seconds\n", average_time_total / NUM_FLOWS_TEST);
 
 	/*FILE *file = fopen("cwnd_size.txt", "w");
 	for(int i = 0; i < counter_cwnd_ex; i++) {
 		fprintf(file, "%f %d\n", (double)(curr_clock[i] - start_time) / CLOCKS_PER_SEC, cwnd_size[i]);
 	}
 	fclose(file);*/
+
+	int pkt_sum = 0;
+	for(int i = 0; i < MAX_NUMBER_CORES; i++) {
+		pkt_sum += packets_per_core[i];
+	}
+	printf("Total num packets sent: %d\n", pkt_sum);
+
+	double time_spent = all_finished_time.tv_sec - init_time.tv_sec;
+	time_spent += (all_finished_time.tv_nsec - init_time.tv_nsec) / 1000000000.0;
+	printf("Time from first to last packet: %f seconds\n", time_spent);
+
+	for(int i = 0; i < NUM_FLOWS_TEST; i++)
+		printf("Flow %d: %d\n", i, packets_per_flow[i]);
 
 	return EXIT_OK;
 }

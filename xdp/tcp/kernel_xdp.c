@@ -17,7 +17,7 @@
 
 #include "common_def.h"
 
-#define ONE_SEC 1000000000
+#define ONE_SEC 1000000000 
 
 
 // From benchmark: to remove later
@@ -48,7 +48,7 @@ struct {
 struct inner_app_array {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __type(key, __u32);
-    __type(value, struct app_event);
+    __type(value, struct app_event); 
     __uint(max_entries, MAX_EVENT_QUEUE_LEN);
 } inner_app_array SEC(".maps");
 
@@ -214,7 +214,7 @@ static __always_inline __u8 parse_packet(void *data, void *data_end,
         return 0;
     }
 
-    __be16 sport = bpf_ntohs(tcph->source);
+    /*__be16 sport = bpf_ntohs(tcph->source);
     __u8 src_port;
     src_port = sport & 0xFF;
     src_port = ((sport >> 8) & 0xFF) ^ src_port;
@@ -224,7 +224,14 @@ static __always_inline __u8 parse_packet(void *data, void *data_end,
     __u8 dst_port;
     dst_port = dport & 0xFF;
     dst_port = ((dport >> 8) & 0xFF) ^ dst_port;
-    net_ev[0].ev_flow_id.dest_port = dst_port;
+    net_ev[0].ev_flow_id.dest_port = dst_port;*/
+
+    __be16 sport = bpf_ntohs(tcph->source);
+    __be16 dport = bpf_ntohs(tcph->dest);
+    __be16 sum = sport + dport;
+    net_ev[0].ev_flow_id.src_port = (sum >> 8) & 0xFF;
+    net_ev[0].ev_flow_id.dest_port = sum & 0xFF;
+
 
     ////bpf_printk("\nACK: %d %d\n", tcph->ack, bpf_ntohl(tcph->ack_seq));
     ////bpf_printk("%d %d", net_ev->ev_flow_id.src_ip, net_ev->ev_flow_id.dest_ip);
@@ -459,20 +466,20 @@ static __always_inline int next_event(struct queue_flow_info * f_info) {
 static __always_inline void * timer_event_dequeue(struct flow_id f_id,
     __u64 * queue_len, int * head) {
     if(__sync_fetch_and_or(queue_len, 0) == 0) {
-        //bpf_printk("timer_event_dequeue: queue is empty, unable to dequeue an event");
+        bpf_printk("timer_event_dequeue: queue is empty, unable to dequeue an event");
         return NULL;
     }
     
     void * inner_flow_array = bpf_map_lookup_elem(&outer_timer_hash, &f_id);
     //void * inner_flow_array = bpf_map_lookup_elem(outer_event_hash, &f_id);
     if(!inner_flow_array) {
-        //bpf_printk("event_dequeue: Couldn't get entry from flow info outer map");
+        bpf_printk("event_dequeue: Couldn't get entry from flow info outer map");
         return NULL;
     }
 
     struct timer_event * event = (struct timer_event *) bpf_map_lookup_elem(inner_flow_array, head);
     if(!event) {
-        //bpf_printk("event_dequeue: Couldn't get entry from flow info inner map");
+        bpf_printk("event_dequeue: Couldn't get entry from flow info inner map");
         return NULL;
     }
 
@@ -488,7 +495,7 @@ static __always_inline void * timer_event_dequeue(struct flow_id f_id,
 
         return event;
     } else {
-        //bpf_printk("timer_event_dequeue: couldn't dequeue because event is invalid");
+        bpf_printk("timer_event_dequeue: couldn't dequeue because event is invalid");
     }
     return NULL;
 }
@@ -496,20 +503,20 @@ static __always_inline void * timer_event_dequeue(struct flow_id f_id,
 static __always_inline void * generic_event_dequeue(void * outer_event_hash, struct flow_id f_id,
     int * queue_len, int * head) {
     if(*queue_len == 0) {
-        //bpf_printk("prog_event_dequeue: queue is empty, unable to dequeue an event");
+        bpf_printk("prog_event_dequeue: queue is empty, unable to dequeue an event");
         return NULL;
     }
     
     void * inner_flow_array = bpf_map_lookup_elem(outer_event_hash, &f_id);
     //void * inner_flow_array = bpf_map_lookup_elem(outer_event_hash, &f_id);
     if(!inner_flow_array) {
-        //bpf_printk("event_dequeue: couldn't get entry from flow info outer map");
+        bpf_printk("event_dequeue: couldn't get entry from flow info outer map");
         return NULL;
     }
 
     void * event = bpf_map_lookup_elem(inner_flow_array, head);
     if(!event) {
-        //bpf_printk("event_dequeue: couldn't get entry from flow info inner map");
+        bpf_printk("event_dequeue: couldn't get entry from flow info inner map");
         return NULL;
     }
 
@@ -536,7 +543,7 @@ static __always_inline int timer_event_enqueue(void *map, struct flow_id *f_id, 
     __u32 * tail = &f_info->timer_info.timer_tail;
 
     if(__sync_fetch_and_or(executing, 0)) {
-        //bpf_printk("try_to_enqueue_timer: timer enqueue currently executing");
+        bpf_printk("try_to_enqueue_timer: timer enqueue currently executing");
         bpf_timer_start(&val->timer, ONE_SEC, 0);
         return 0;
     }
@@ -546,20 +553,20 @@ static __always_inline int timer_event_enqueue(void *map, struct flow_id *f_id, 
     __sync_fetch_and_xor(executing, 1);
 
     if(__sync_fetch_and_or(queue_len, 0) == MAX_EVENT_QUEUE_LEN - 1) {
-        //bpf_printk("try_to_enqueue_timer: queue is full, unable to enqueue event");
+        bpf_printk("try_to_enqueue_timer: queue is full, unable to enqueue event");
         __sync_fetch_and_xor(executing, 1);
         return 0;
     }
 
     struct inner_timer_array *inner_array = bpf_map_lookup_elem(&outer_timer_hash, &event.ev_flow_id);
     if(!inner_array) {
-        //bpf_printk("try_to_enqueue_timer: couldn't get entry from outer map");
+        bpf_printk("try_to_enqueue_timer: couldn't get entry from outer map");
         __sync_fetch_and_xor(executing, 1);
         return 0;
     }
 
     if(bpf_map_update_elem(inner_array, tail, &event, BPF_ANY)) {
-        //bpf_printk("try_to_enqueue_timer: couldn't update entry from inner map");
+        bpf_printk("try_to_enqueue_timer: couldn't update entry from inner map");
         __sync_fetch_and_xor(executing, 1);
         return 0;
     }
@@ -618,6 +625,7 @@ static __always_inline int cancel_timer(struct flow_id f_id,
     }*/
 
     if(!bpf_timer_cancel(&(map_entry->timer))) {
+        //bpf_printk("\n%d %d", f_id.src_port, f_id.dest_port);
         //bpf_printk("cancel_timer: couldn't cancel timer");
         return -1;
     }
@@ -632,7 +640,7 @@ static __always_inline int restart_timer(struct flow_id f_id, __u64 time,
     struct timer_trigger_id timer_id = {f_id, index};
     struct timer_trigger *map_entry = bpf_map_lookup_elem(&timer_trigger_hash, &timer_id);
     if(!map_entry) {
-        //bpf_printk("restart_timer: Couldn't find inner map entry");
+        bpf_printk("restart_timer: Couldn't find inner map entry");
         return -1;
     }
 
@@ -642,7 +650,7 @@ static __always_inline int restart_timer(struct flow_id f_id, __u64 time,
     }*/
 
     if(bpf_timer_start(&(map_entry->timer), time, 0) != 0) {
-        //bpf_printk("restart_timer: couldn't restart timer");
+        bpf_printk("restart_timer: couldn't restart timer");
         return -1;
     }
 
@@ -658,7 +666,7 @@ static __always_inline struct timer_trigger *retrieve_timer(struct flow_id f_id,
         bpf_map_update_elem(&timer_trigger_hash, &timer_id, &new_entry, BPF_NOEXIST);
         map_entry = bpf_map_lookup_elem(&timer_trigger_hash, &timer_id);
         if(!map_entry) {
-            //bpf_printk("retrieve_timer: Couldn't find inner map entry");
+            bpf_printk("retrieve_timer: Couldn't find inner map entry");
             return NULL;
         }
         return map_entry;
@@ -670,13 +678,15 @@ static __always_inline int initialize_timer(struct timer_event event,
     __u64 time, enum timer_id index) {
 
     struct timer_trigger *map_entry = retrieve_timer(event.ev_flow_id, index);
-    if(!map_entry)
-        return -1;
-
-    if(map_entry->triggered) {
-        //bpf_printk("initialize_timer: timer already triggered");
+    if(!map_entry) {
+        bpf_printk("initialize_timer: Couldn't find timer map entry");
         return -1;
     }
+
+    //if(map_entry->triggered) {
+        //bpf_printk("initialize_timer: timer already triggered");
+    //    return -1;
+    //}
 
     map_entry->t_event = event;
     map_entry->triggered = 1;
@@ -689,10 +699,13 @@ static __always_inline int initialize_timer(struct timer_event event,
     // Sets the function to be called after the timer triggers
     err = bpf_timer_set_callback(&(map_entry->timer), timer_event_enqueue);
     if(err != 0) {
-        //bpf_printk("Error while setting callback: %ld", err);
+        bpf_printk("Error while setting callback: %ld", err);
     }
 
-    bpf_timer_start(&(map_entry->timer), time, 0);
+    err = bpf_timer_start(&(map_entry->timer), time, 0);
+    if(err != 0) {
+        bpf_printk("Error while starting timer: %ld", err);
+    }
 
     return 0;
 }
@@ -878,6 +891,10 @@ static __always_inline void ack_net_ep(struct net_event *event, struct context *
         return;*/   
     if(inter_output->skip_ack_eps)
         return;
+    
+    /*bpf_printk("SEND_NXT: %d, SEND_UNA: %d", ctx->send_next, ctx->send_una);
+    __u16 flow = ((__u16)event->ev_flow_id.src_port) | (__u16)event->ev_flow_id.dest_port;
+    bpf_printk("FLOW: %d", flow);*/
 
     ctx->last_rwnd_size = event->rwnd_size;
 
@@ -887,7 +904,7 @@ static __always_inline void ack_net_ep(struct net_event *event, struct context *
     // Total data yet to transmit 
     __u32 data_rest = ctx->data_end - ctx->send_next;
     if(data_rest == 0 && event->ack_seq == ctx->send_next) {
-       //bpf_printk("All packets sent and received");
+        bpf_printk("All packets sent and received");
         cancel_timer(event->ev_flow_id, ACK_TIMEOUT);
         return;
     }
@@ -915,6 +932,13 @@ static __always_inline void ack_net_ep(struct net_event *event, struct context *
             return;
         __builtin_memcpy((void *)(long)redirect_pkt->data + (meta_hdr->metadata_end), &metadata, sizeof(metadata));
         meta_hdr->metadata_end += sizeof(metadata);
+
+        cancel_timer(event->ev_flow_id, ACK_TIMEOUT);
+        struct timer_event new_event;
+        new_event.ev_flow_id = event->ev_flow_id;
+        new_event.event_type = MISS_ACK;
+        new_event.seq_num = ctx->send_una;
+        initialize_timer(new_event, ctx->RTO, ACK_TIMEOUT);
 
         return;
     }
@@ -1134,8 +1158,10 @@ static __always_inline void ack_timeout_ep(struct timer_event *event, struct con
     struct intermediate_output *inter_output, struct xdp_md *redirect_pkt) {
     // Resend packet
     // Q: similar problem as I had in app_event, but with timer_event seq_num. Had to change the order in struct definition
-   //bpf_printk("SEND_NXT: %d, SEND_UNA: %d", ctx->send_next, ctx->send_una);
-    if(ctx->send_una == event->seq_num) {
+    //bpf_printk("SEND_NXT: %d, SEND_UNA: %d", ctx->send_next, ctx->send_una);
+    //bpf_printk("FLOW: %d", event->ev_flow_id.src_port);
+    
+    //if(ctx->send_una >= event->seq_num) {
         // Slow start after a timeout
         ctx->cwnd_size = SMSS * 3;
 
@@ -1184,7 +1210,7 @@ static __always_inline void ack_timeout_ep(struct timer_event *event, struct con
         meta_hdr->metadata_end += sizeof(metadata);
 
         restart_timer(event->ev_flow_id, ctx->cwnd_size, ACK_TIMEOUT);
-    }
+    //}
 }
 
 static __always_inline void dispatcher(void * event, enum minor_event_type type,
