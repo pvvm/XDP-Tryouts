@@ -50,7 +50,7 @@
 
 #define BUFFER_SIZE			1440000000
 
-#define NUM_FLOWS_TEST		(150)
+#define NUM_FLOWS_TEST		(32)
 
 static const char *default_filename = "kernel_xdp.o";
 

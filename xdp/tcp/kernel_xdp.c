@@ -1209,7 +1209,7 @@ static __always_inline void ack_timeout_ep(struct timer_event *event, struct con
         __builtin_memcpy((void *)(long)redirect_pkt->data + (meta_hdr->metadata_end), &metadata, sizeof(metadata));
         meta_hdr->metadata_end += sizeof(metadata);
 
-        restart_timer(event->ev_flow_id, ctx->cwnd_size, ACK_TIMEOUT);
+        restart_timer(event->ev_flow_id, ctx->RTO, ACK_TIMEOUT);
     //}
 }
 
