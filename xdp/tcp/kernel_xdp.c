@@ -784,29 +784,32 @@ static __always_inline void send_ep(struct app_event *event, struct context *ctx
     initialize_timer(new_event, ctx->RTO, ACK_TIMEOUT);
 }
 
-static __always_inline void slows_congc_ep(struct net_event *event, struct context *ctx,
+static __always_inline void rto_ep(struct net_event *event, struct context *ctx,
     struct intermediate_output *inter_output, struct xdp_md *redirect_pkt) {
-    
+
     inter_output->skip_ack_eps = 0;
-    // Q: eBPF verifier works in mysterious ways
     if(event->ack_seq < ctx->send_una || ctx->send_next < event->ack_seq) {
         inter_output->skip_ack_eps = 1;
         return;
     }
 
-    if(inter_output->change_cwnd) {
-        // Slow start
-        if(ctx->cwnd_size < ctx->ssthresh) {
-            ctx->cwnd_size += SMSS;
-        }
-        // Congestion control
-        else {
-            int add_cwnd = SMSS * SMSS / ctx->cwnd_size;
-            if(add_cwnd == 0)
-                add_cwnd = 1;
-            // TODO: check if should use floor, ceil or nothing
-            ctx->cwnd_size += add_cwnd;
-        }
+    if(ctx->first_rto) {
+        ctx->SRTT = RTT;
+        ctx->RTTVAR = RTT / 2;
+        if(GRANULARITY_G >= 4 * ctx->RTTVAR)
+            ctx->RTO = ctx->SRTT + GRANULARITY_G;
+        else
+            ctx->RTO = ctx->SRTT + 4 * ctx->RTTVAR;
+
+        ctx->first_rto = 0;
+
+    } else {
+        ctx->RTTVAR = (1 - 1/4) * ctx->RTTVAR + 1/4 * llabs(ctx->SRTT - RTT);
+        ctx->SRTT = (1 - 1/8) * ctx->SRTT + 1/8 * RTT;
+        if(GRANULARITY_G >= 4 * ctx->RTTVAR)
+            ctx->RTO = ctx->SRTT + GRANULARITY_G;
+        else
+            ctx->RTO = ctx->SRTT + 4 * ctx->RTTVAR;
     }
 }
 
@@ -855,33 +858,27 @@ static __always_inline void fast_retr_rec_ep(struct net_event *event, struct con
     }
 }
 
-static __always_inline void rto_ep(struct net_event *event, struct context *ctx,
+static __always_inline void slows_congc_ep(struct net_event *event, struct context *ctx,
     struct intermediate_output *inter_output, struct xdp_md *redirect_pkt) {
-
-    /*if(event->ack_seq < ctx->send_una || ctx->send_next < event->ack_seq)
-        return;*/
+    
+    // Q: eBPF verifier works in mysterious ways
     if(inter_output->skip_ack_eps)
         return;
 
-    if(ctx->first_rto) {
-        ctx->SRTT = RTT;
-        ctx->RTTVAR = RTT / 2;
-        if(GRANULARITY_G >= 4 * ctx->RTTVAR)
-            ctx->RTO = ctx->SRTT + GRANULARITY_G;
-        else
-            ctx->RTO = ctx->SRTT + 4 * ctx->RTTVAR;
-
-        ctx->first_rto = 0;
-
-    } else {
-        ctx->RTTVAR = (1 - 1/4) * ctx->RTTVAR + 1/4 * llabs(ctx->SRTT - RTT);
-        ctx->SRTT = (1 - 1/8) * ctx->SRTT + 1/8 * RTT;
-        if(GRANULARITY_G >= 4 * ctx->RTTVAR)
-            ctx->RTO = ctx->SRTT + GRANULARITY_G;
-        else
-            ctx->RTO = ctx->SRTT + 4 * ctx->RTTVAR;
+    if(inter_output->change_cwnd) {
+        // Slow start
+        if(ctx->cwnd_size < ctx->ssthresh) {
+            ctx->cwnd_size += SMSS;
+        }
+        // Congestion control
+        else {
+            int add_cwnd = SMSS * SMSS / ctx->cwnd_size;
+            if(add_cwnd == 0)
+                add_cwnd = 1;
+            // TODO: check if should use floor, ceil or nothing
+            ctx->cwnd_size += add_cwnd;
+        }
     }
-
 }
 
 static __always_inline void ack_net_ep(struct net_event *event, struct context *ctx,
