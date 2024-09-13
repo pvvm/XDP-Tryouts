@@ -136,9 +136,9 @@ struct mom_map_info {
 };
 
 struct mom_map_info mm_info[NUMBER_MOM] =
-								{{"outer_app_hash", sizeof(struct app_event), MAX_EVENT_QUEUE_LEN},
-								{"outer_timer_hash", sizeof(struct timer_event), MAX_EVENT_QUEUE_LEN},
-								{"outer_prog_hash", sizeof(struct prog_event), MAX_EVENT_QUEUE_LEN}};
+								{{"outer_app_array", sizeof(struct app_event), MAX_EVENT_QUEUE_LEN},
+								{"outer_timer_array", sizeof(struct timer_event), MAX_EVENT_QUEUE_LEN},
+								{"outer_prog_array", sizeof(struct prog_event), MAX_EVENT_QUEUE_LEN}};
 
 
 static inline __u32 xsk_ring_prod__free(struct xsk_ring_prod *r)
@@ -782,7 +782,7 @@ void * idle_checker(void *arg) {
 	struct timespec curr_time;
 	long ns_time;
 	int num_flows, err;
-	struct flow_id f_id;
+	__u32 f_id;
 	int cpu_id = sched_getcpu();
 	struct queue_flow_info curr_f_info, old_f_info;
 	__u32 curr_queue_tail;
@@ -841,7 +841,7 @@ void * idle_checker(void *arg) {
 	pthread_exit(NULL);
 }
 
-int set_initial_app_queue_tail(struct flow_id f_id, int app_queue_tail_fd) {
+int set_initial_app_queue_tail(__u32 f_id, int app_queue_tail_fd) {
 	__u32 tail = 0;
 	int err = bpf_map_update_elem(app_queue_tail_fd, &f_id, &tail, BPF_ANY);
 	if(err < 0) {
@@ -851,7 +851,7 @@ int set_initial_app_queue_tail(struct flow_id f_id, int app_queue_tail_fd) {
 	return 1;
 }
 
-int set_initial_ctx_values(struct flow_id f_id, int context_fd) {
+int set_initial_ctx_values(__u32 f_id, int context_fd) {
 	struct context new_ctx;
 	new_ctx.last_ack = 4294967295;
 	new_ctx.duplicate_acks = 0;
@@ -883,7 +883,7 @@ int set_initial_ctx_values(struct flow_id f_id, int context_fd) {
 	return 1;
 }
 
-int set_initial_queue_flow_info(struct flow_id f_id, struct pkt_info p_info, int flow_info_fd, int cpu_id) {
+int set_initial_queue_flow_info(__u32 f_id, struct pkt_info p_info, int flow_info_fd, int cpu_id) {
 	struct queue_flow_info new_flow_info = {{0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0}};
 	int err = bpf_map_update_elem(flow_info_fd, &f_id, &new_flow_info, BPF_ANY);
 	if(err < 0) {
@@ -895,7 +895,7 @@ int set_initial_queue_flow_info(struct flow_id f_id, struct pkt_info p_info, int
 	return 1;
 }
 
-int set_mom_flow_entry(struct flow_id f_id, int *map_fds) {
+int set_mom_flow_entry(__u32 f_id, int *map_fds) {
 	int inner_fd;
 	for(int i = 0; i < NUMBER_MOM; i++) {
 		inner_fd = bpf_map_create(BPF_MAP_TYPE_ARRAY, NULL, sizeof(__u32), mm_info[i].size, mm_info[i].num_elements, 0);
@@ -916,30 +916,41 @@ int set_mom_flow_entry(struct flow_id f_id, int *map_fds) {
 	return 1;
 }
 
-void distribute_requests(int *map_fds, int context_fd, int flow_info_fd, int tail_map_fd) {
+int set_flow_id_array_entry(struct flow_id f_hash_id, __u32 f_array_id, int flow_id_hash_fd) {
+	int err = bpf_map_update_elem(flow_id_hash_fd, &f_hash_id, &f_array_id, BPF_ANY);
+	if(err < 0) {
+		printf("Error while updating flow id array entry %d", err);
+		return 0;
+	}
+	return 1;
+}
+
+void distribute_requests(int *map_fds, int context_fd, int flow_info_fd, int tail_map_fd, int flow_id_hash_fd) {
 
 	init_idle_flow_array();
 	init_queue_v2(cpu_req_queues_v2);
 
-	struct flow_id f_id_array[NUM_FLOWS_TEST];
+	__u32 f_id_array[NUM_FLOWS_TEST];
 
 	int cpu_to_send = 0;
-	for(int i = 0; i < NUM_FLOWS_TEST; i++) {
+	for(__u32 i = 0; i < NUM_FLOWS_TEST; i++) {
 		struct pkt_info p_info = temporary_default_info_rcv(i);
-		struct flow_id f_id = convert_pktinfo_to_flow_id(p_info);
+		struct flow_id f_hash_id = convert_pktinfo_to_flow_id(p_info);
 		//printf("%d %d %d %d\n", f_id.src_ip, f_id.dest_ip, f_id.src_port, f_id.dest_port);
 
 		// Initialize maps and arrays of a flow
-		if(!set_mom_flow_entry(f_id, map_fds))
+		if(!set_flow_id_array_entry(f_hash_id, i, flow_id_hash_fd))
 			return;
-		if(!set_initial_ctx_values(f_id, context_fd))
+		if(!set_mom_flow_entry(i, map_fds))
 			return;
-		if(!set_initial_queue_flow_info(f_id, p_info, flow_info_fd, cpu_to_send))
+		if(!set_initial_ctx_values(i, context_fd))
 			return;
-		if(!set_initial_app_queue_tail(f_id, tail_map_fd))
+		if(!set_initial_queue_flow_info(i, p_info, flow_info_fd, cpu_to_send))
+			return;
+		if(!set_initial_app_queue_tail(i, tail_map_fd))
 			return;
 
-		f_id_array[i] = f_id;
+		f_id_array[i] = i;
 		cpu_to_send = (cpu_to_send + 1) % MAX_NUMBER_CORES;
 	}
 
@@ -971,7 +982,7 @@ void distribute_requests(int *map_fds, int context_fd, int flow_info_fd, int tai
 	//free_queue(cpu_req_queues);
 }
 
-int get_all_map_fd(int *map_fds, int *tail_app_fd, int *context_fd, int *f_info_fd) {
+int get_all_map_fd(int *map_fds, int *tail_app_fd, int *context_fd, int *f_info_fd, int *flow_id_hash_id) {
 
 	for(int i = 0; i < NUMBER_MOM; i++) {
 		map_fds[i] = find_map_fd(xdp_program__bpf_obj(prog), mm_info[i].name);
@@ -979,15 +990,19 @@ int get_all_map_fd(int *map_fds, int *tail_app_fd, int *context_fd, int *f_info_
 			return 0;
 	}
 
-	*tail_app_fd = find_map_fd(xdp_program__bpf_obj(prog), "tail_app_hash");
+	*tail_app_fd = find_map_fd(xdp_program__bpf_obj(prog), "tail_app_array");
 	if(*tail_app_fd < 0)
 		return 0;
 
-	*context_fd = find_map_fd(xdp_program__bpf_obj(prog), "context_hash");
+	*context_fd = find_map_fd(xdp_program__bpf_obj(prog), "context_array");
 	if(*context_fd < 0)
 		return 0;
 
-	*f_info_fd = find_map_fd(xdp_program__bpf_obj(prog), "queue_flow_info_hash");
+	*f_info_fd = find_map_fd(xdp_program__bpf_obj(prog), "queue_flow_info_array");
+	if(*f_info_fd < 0)
+		return 0;
+
+	*flow_id_hash_id = find_map_fd(xdp_program__bpf_obj(prog), "flow_id_hash");
 	if(*f_info_fd < 0)
 		return 0;
 
@@ -1175,8 +1190,8 @@ int main(int argc, char **argv)
 	}
 
 	int maps_fd[4];
-	int tail_app_map_fd, context_fd, f_info_fd;
-	if(!get_all_map_fd(maps_fd, &tail_app_map_fd, &context_fd, &f_info_fd))
+	int tail_app_map_fd, context_fd, f_info_fd, flow_id_hash_fd;
+	if(!get_all_map_fd(maps_fd, &tail_app_map_fd, &context_fd, &f_info_fd, &flow_id_hash_fd))
 		exit(EXIT_FAIL_BPF);
 
 	// Allocates and fills send buffer with letters from a to z
@@ -1215,7 +1230,7 @@ int main(int argc, char **argv)
 			pthread_setaffinity_np(threads[i], sizeof(cpu_set_t), &cpuset);
 			CPU_ZERO(&cpuset);
 		}
-		distribute_requests(maps_fd, context_fd, f_info_fd, tail_app_map_fd);
+		distribute_requests(maps_fd, context_fd, f_info_fd, tail_app_map_fd, flow_id_hash_fd);
 	}
 
 	for(int i = 0; i < MAX_NUMBER_CORES; i++) {

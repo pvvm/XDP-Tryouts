@@ -148,9 +148,13 @@ struct pkt_info temporary_default_info_rcv(int i) {
 
 struct flow_id convert_pktinfo_to_flow_id(struct pkt_info p_info) {
     struct flow_id f_id;
+    f_id.src_ip = p_info.src_ip; 
+    f_id.dest_ip = p_info.dst_ip;
+    f_id.src_port = ntohs(p_info.src_port);
+    f_id.dest_port = ntohs(p_info.dst_port);
 
     //__be32 saddr = p_info.dst_ip; 
-    __be32 saddr = p_info.src_ip; 
+    /*__be32 saddr = p_info.src_ip; 
     __u8 src_ip;
     src_ip = saddr & 0xFF;
     src_ip = ((saddr >> 8) & 0xFF) ^ src_ip;
@@ -165,7 +169,7 @@ struct flow_id convert_pktinfo_to_flow_id(struct pkt_info p_info) {
     dst_ip = ((daddr >> 8) & 0xFF) ^ dst_ip;
     dst_ip = ((daddr >> 16) & 0xFF) ^ dst_ip;
     dst_ip = ((daddr >> 24) & 0xFF) ^ dst_ip;
-	f_id.dest_ip = dst_ip;
+	f_id.dest_ip = dst_ip;*/
 
     /*__be16 sport = ntohs(p_info.src_port);
 	__u8 src_port;
@@ -179,11 +183,11 @@ struct flow_id convert_pktinfo_to_flow_id(struct pkt_info p_info) {
     dst_port = ((dport >> 8) & 0xFF) ^ dst_port;
 	f_id.dest_port = dst_port;*/
 
-    __be16 sport = ntohs(p_info.src_port);
+    /*__be16 sport = ntohs(p_info.src_port);
     __be16 dport = ntohs(p_info.dst_port);
     __be16 sum = sport + dport;
     f_id.src_port = (sum >> 8) & 0xFF;
-    f_id.dest_port = sum & 0xFF;
+    f_id.dest_port = sum & 0xFF;*/
 
     return f_id;
 }

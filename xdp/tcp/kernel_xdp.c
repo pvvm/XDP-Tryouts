@@ -53,20 +53,20 @@ struct inner_app_array {
 } inner_app_array SEC(".maps");
 
 struct outer_app_hash {
-    __uint(type, BPF_MAP_TYPE_HASH_OF_MAPS);
-    __type(key, struct flow_id);
+    __uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
+    __type(key, __u32);
     __uint(max_entries, MAX_NUMBER_FLOWS + 1);
     __array(values, struct inner_app_array);
-} outer_app_hash SEC(".maps") = {
+} outer_app_array SEC(".maps") = {
     .values = {(void*)&inner_app_array},
 };
 
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __type(key, struct flow_id);
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __type(key, __u32);
     __type(value, __u32);
     __uint(max_entries, MAX_NUMBER_FLOWS + 1);
-} tail_app_hash SEC(".maps");
+} tail_app_array SEC(".maps");
 
 /*--------------- TIMER EVENT MAPS ---------------*/
 
@@ -78,11 +78,11 @@ struct inner_timer_array {
 } inner_timer_array SEC(".maps");
 
 struct outer_timer_hash {
-    __uint(type, BPF_MAP_TYPE_HASH_OF_MAPS);
-    __type(key, struct flow_id);
+    __uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
+    __type(key, __u32);
     __uint(max_entries, MAX_NUMBER_FLOWS + 1);
     __array(values, struct inner_timer_array);
-} outer_timer_hash SEC(".maps") = {
+} outer_timer_array SEC(".maps") = {
     .values = {(void*)&inner_timer_array},
 };
 
@@ -97,22 +97,31 @@ struct inner_prog_array {
 } inner_prog_array SEC(".maps");
 
 struct outer_prog_hash {
-    __uint(type, BPF_MAP_TYPE_HASH_OF_MAPS);
-    __type(key, struct flow_id);
+    __uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
+    __type(key, __u32);
     __uint(max_entries, MAX_NUMBER_FLOWS + 1);
     __array(values, struct inner_prog_array);
-} outer_prog_hash SEC(".maps") = {
+} outer_prog_array SEC(".maps") = {
     .values = {(void*)&inner_prog_array},
 };
+
+/*--------------- FLOW ID HASH MAP ---------------*/
+
+struct flow_id_hash {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, struct flow_id);
+    __type(value, __u32);
+    __uint(max_entries, MAX_NUMBER_FLOWS + 1);
+} flow_id_hash SEC(".maps");
 
 /*--------------- FLOW INFO MAPS ---------------*/
 
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __type(key, struct flow_id);
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __type(key, __u32);
     __type(value, struct queue_flow_info);
     __uint(max_entries, MAX_NUMBER_FLOWS + 1);
-} queue_flow_info_hash SEC(".maps");
+} queue_flow_info_array SEC(".maps");
 
 /*--------------- TIMER TRIGGER MAP ---------------*/
 
@@ -140,18 +149,26 @@ struct {
 } timer_trigger_hash SEC(".maps");
 
 
-/*--------------- CONTEXT HASH MAP ---------------*/
+/*--------------- CONTEXT ARRAY MAP ---------------*/
 
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __type(key, struct flow_id);
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __type(key, __u32);
     __type(value, struct context);
     __uint(max_entries, MAX_NUMBER_FLOWS + 1);
-} context_hash SEC(".maps");
+} context_array SEC(".maps");
 
 
 static __always_inline int initialize_timer(struct timer_event, __u64, enum timer_id);
 
+static __always_inline __u32 * retrieve_flow_array_id(struct flow_id flow_hash_id) {
+    __u32 * flow_array_id = bpf_map_lookup_elem(&flow_id_hash, &flow_hash_id);
+    if(!flow_array_id) {
+        bpf_printk("retrieve_flow_array_id: flow_array_id wasn't correctly set");
+        return NULL;
+    }
+    return flow_array_id;
+}
 
 static __always_inline __u8 define_minor_type(struct net_event net_ev[MAX_NET_EVENTS], __u16 ack_pkt, __u32 data_len) {
     if(ack_pkt && data_len > 0) {
@@ -193,7 +210,7 @@ static __always_inline __u8 parse_packet(void *data, void *data_end,
         return 0;
     }
 
-    __be32 saddr = iphdr->saddr; 
+    /*__be32 saddr = iphdr->saddr; 
     __u8 src_ip;
     src_ip = saddr & 0xFF;
     src_ip = ((saddr >> 8) & 0xFF) ^ src_ip;
@@ -207,7 +224,11 @@ static __always_inline __u8 parse_packet(void *data, void *data_end,
     dst_ip = ((daddr >> 8) & 0xFF) ^ dst_ip;
     dst_ip = ((daddr >> 16) & 0xFF) ^ dst_ip;
     dst_ip = ((daddr >> 24) & 0xFF) ^ dst_ip;
-    net_ev[0].ev_flow_id.dest_ip = dst_ip;
+    net_ev[0].ev_flow_id.dest_ip = dst_ip;*/
+
+    struct flow_id flow_hash_id;
+    flow_hash_id.src_ip = iphdr->saddr;
+    flow_hash_id.dest_ip = iphdr->daddr;
 
     if(parse_tcphdr(&nh, data_end, &tcph) ==  -1) {
         //bpf_printk("parse_packet: error while parsing TCP header");
@@ -226,17 +247,24 @@ static __always_inline __u8 parse_packet(void *data, void *data_end,
     dst_port = ((dport >> 8) & 0xFF) ^ dst_port;
     net_ev[0].ev_flow_id.dest_port = dst_port;*/
 
-    __be16 sport = bpf_ntohs(tcph->source);
+    /*__be16 sport = bpf_ntohs(tcph->source);
     __be16 dport = bpf_ntohs(tcph->dest);
     __be16 sum = sport + dport;
     net_ev[0].ev_flow_id.src_port = (sum >> 8) & 0xFF;
-    net_ev[0].ev_flow_id.dest_port = sum & 0xFF;
+    net_ev[0].ev_flow_id.dest_port = sum & 0xFF;*/
+
+    flow_hash_id.src_port = bpf_ntohs(tcph->source);
+    flow_hash_id.dest_port = bpf_ntohs(tcph->dest);
 
 
     ////bpf_printk("\nACK: %d %d\n", tcph->ack, bpf_ntohl(tcph->ack_seq));
     ////bpf_printk("%d %d", net_ev->ev_flow_id.src_ip, net_ev->ev_flow_id.dest_ip);
     ////bpf_printk("%d %d", net_ev->ev_flow_id.src_port, net_ev->ev_flow_id.dest_port);
 
+    __u32 * flow_array_id = retrieve_flow_array_id(flow_hash_id);
+    if(!flow_array_id)
+        return 0;
+    net_ev[0].ev_flow_id = *flow_array_id;
     net_ev[0].seq_num = bpf_ntohl(tcph->seq);
     net_ev[0].ack_seq = bpf_ntohl(tcph->ack_seq);
     net_ev[0].data_len = bpf_ntohs(iphdr->tot_len) - sizeof(struct iphdr) - sizeof(struct tcphdr);
@@ -250,12 +278,12 @@ static __always_inline __u8 parse_packet(void *data, void *data_end,
     meta_hdr->src_port = tcph->source;
     meta_hdr->dst_port = tcph->dest;
 
+
+
     // Note: identifies if it is a bpf_prog_run packet via IP header ID
     if(iphdr->id == 65535) {
         ret = 3;
     }
-
-    //bpf_printk("Net packet %d", ret);
 
     return ret;
 }
@@ -296,32 +324,23 @@ static __always_inline __u8 mutate_pkt(struct xdp_md *redirect_pkt, struct net_e
     return ret;
 }
 
-static __always_inline struct context * retrieve_ctx(struct flow_id flow) {
-    struct context *ctx = bpf_map_lookup_elem(&context_hash, &flow);
+static __always_inline struct context * retrieve_ctx(__u32 f_id) {
+    struct context *ctx = bpf_map_lookup_elem(&context_array, &f_id);
     if(!ctx) {
-        /*struct context new_ctx = {4294967295, 0, 999999999, 0, 3 * SMSS, 1, 0, 0, 1};
-        bpf_map_update_elem(&context_hash, &flow, &new_ctx, BPF_NOEXIST);
-        ctx = bpf_map_lookup_elem(&context_hash, &flow);
-        if(!ctx) {
-            return NULL;
-        }
-        return ctx;*/
+        bpf_printk("retrieve_ctx: context map entry wasn't set");
         return NULL;
     }
     return ctx;
 }
 
-static __always_inline void update_app_len(struct app_info *app_info, struct flow_id f_id) {
+static __always_inline void update_app_len(struct app_info *app_info, __u32 f_id) {
 
-    __u32 *app_tail = bpf_map_lookup_elem(&tail_app_hash, &f_id);
-    //__u32 *app_tail = bpf_map_lookup_elem(&tail_app_hash, &ev_flow_id);
+    __u32 *app_tail = bpf_map_lookup_elem(&tail_app_array, &f_id);
     if(!app_tail) {
+        bpf_printk("update_app_len: app tail map entry wasn't set");
         __u32 new_tail = 0;
-        // Note: change this later when we can dynamicaly assign entries to MoM arrays
-        //bpf_map_update_elem(&tail_app_hash, &ev_flow_id, &new_tail, BPF_NOEXIST);
-        //app_tail = bpf_map_lookup_elem(&tail_app_hash, &ev_flow_id);
-        bpf_map_update_elem(&tail_app_hash, &f_id, &new_tail, BPF_NOEXIST);
-        app_tail = bpf_map_lookup_elem(&tail_app_hash, &f_id);
+        bpf_map_update_elem(&tail_app_array, &f_id, &new_tail, BPF_NOEXIST);
+        app_tail = bpf_map_lookup_elem(&tail_app_array, &f_id);
         if(!app_tail) {
             //bpf_printk("update_app_len: couldn't get entry from app tail map");
             return;
@@ -332,13 +351,13 @@ static __always_inline void update_app_len(struct app_info *app_info, struct flo
 }
 
 
-static __always_inline struct queue_flow_info * find_queue_flow_info(struct flow_id f_id) {
+static __always_inline struct queue_flow_info * find_queue_flow_info(__u32 f_id) {
 
-    struct queue_flow_info *f_info = bpf_map_lookup_elem(&queue_flow_info_hash, &f_id);
+    struct queue_flow_info *f_info = bpf_map_lookup_elem(&queue_flow_info_array, &f_id);
     if(!f_info) {
         struct queue_flow_info new_f_info = {{0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0}};
-        bpf_map_update_elem(&queue_flow_info_hash, &f_id, &new_f_info, BPF_NOEXIST);
-        f_info = bpf_map_lookup_elem(&queue_flow_info_hash, &f_id);
+        bpf_map_update_elem(&queue_flow_info_array, &f_id, &new_f_info, BPF_NOEXIST);
+        f_info = bpf_map_lookup_elem(&queue_flow_info_array, &f_id);
         if(!f_info) {
             //bpf_printk("find_queue_flow_info: Couldn't get entry from flow info inner map");
             return NULL;
@@ -349,7 +368,7 @@ static __always_inline struct queue_flow_info * find_queue_flow_info(struct flow
 }
 
 static __always_inline int try_to_enqueue(void * map, void * event,
-    struct flow_id f_id, int * queue_len, int *tail) {
+    __u32 f_id, int * queue_len, int *tail) {
 
     if(*queue_len == MAX_EVENT_QUEUE_LEN - 1) {
         //bpf_printk("Queue is full: unable to enqueue event");
@@ -387,7 +406,7 @@ static __always_inline void generic_event_enqueue(void * event, enum major_event
         struct queue_flow_info *f_info = find_queue_flow_info(enq_event.ev_flow_id);
         if(!f_info)
             return;
-        if(!try_to_enqueue(&outer_prog_hash, event, enq_event.ev_flow_id, &(f_info->prog_info.len_prog_queue),
+        if(!try_to_enqueue(&outer_prog_array, event, enq_event.ev_flow_id, &(f_info->prog_info.len_prog_queue),
             &(f_info->prog_info.prog_tail))) {
             //bpf_printk("Unable to enqueue PROG_EVENT");
         }
@@ -463,14 +482,14 @@ static __always_inline int next_event(struct queue_flow_info * f_info) {
     return type;
 }
 
-static __always_inline void * timer_event_dequeue(struct flow_id f_id,
+static __always_inline void * timer_event_dequeue(__u32 f_id,
     __u64 * queue_len, int * head) {
     if(__sync_fetch_and_or(queue_len, 0) == 0) {
         bpf_printk("timer_event_dequeue: queue is empty, unable to dequeue an event");
         return NULL;
     }
     
-    void * inner_flow_array = bpf_map_lookup_elem(&outer_timer_hash, &f_id);
+    void * inner_flow_array = bpf_map_lookup_elem(&outer_timer_array, &f_id);
     //void * inner_flow_array = bpf_map_lookup_elem(outer_event_hash, &f_id);
     if(!inner_flow_array) {
         bpf_printk("event_dequeue: Couldn't get entry from flow info outer map");
@@ -500,15 +519,14 @@ static __always_inline void * timer_event_dequeue(struct flow_id f_id,
     return NULL;
 }
 
-static __always_inline void * generic_event_dequeue(void * outer_event_hash, struct flow_id f_id,
+static __always_inline void * generic_event_dequeue(void * outer_event_array, __u32 f_id,
     int * queue_len, int * head) {
     if(*queue_len == 0) {
         bpf_printk("prog_event_dequeue: queue is empty, unable to dequeue an event");
         return NULL;
     }
     
-    void * inner_flow_array = bpf_map_lookup_elem(outer_event_hash, &f_id);
-    //void * inner_flow_array = bpf_map_lookup_elem(outer_event_hash, &f_id);
+    void * inner_flow_array = bpf_map_lookup_elem(outer_event_array, &f_id);
     if(!inner_flow_array) {
         bpf_printk("event_dequeue: couldn't get entry from flow info outer map");
         return NULL;
@@ -530,7 +548,7 @@ static __always_inline void * generic_event_dequeue(void * outer_event_hash, str
     return event;
 }
 
-static __always_inline int timer_event_enqueue(void *map, struct flow_id *f_id, struct timer_trigger *val) {
+static __always_inline int timer_event_enqueue(void *map, __u32 *f_id, struct timer_trigger *val) {
     struct timer_event event = val->t_event;
     event.valid_bit = 1;
 
@@ -558,7 +576,7 @@ static __always_inline int timer_event_enqueue(void *map, struct flow_id *f_id, 
         return 0;
     }
 
-    struct inner_timer_array *inner_array = bpf_map_lookup_elem(&outer_timer_hash, &event.ev_flow_id);
+    struct inner_timer_array *inner_array = bpf_map_lookup_elem(&outer_timer_array, &event.ev_flow_id);
     if(!inner_array) {
         bpf_printk("try_to_enqueue_timer: couldn't get entry from outer map");
         __sync_fetch_and_xor(executing, 1);
@@ -583,34 +601,7 @@ static __always_inline int timer_event_enqueue(void *map, struct flow_id *f_id, 
     return 0;
 }
 
-/*static int create_timer_event(void *map, struct flow_id *flow, struct timer_trigger *val) {
-    val->triggered = 0;
-    struct timer_event new_event = val->t_event;
-    new_event.valid_bit = 1;
-    __u32 cpu_id = val->cpu_id;
-    timer_event_enqueue(&new_event, cpu_id);
-
-    return 0;
-}*/
-
-/*static __u64 find_timer_index_loop(struct bpf_map *map, __u32 * index,
-    struct timer_trigger *map_entry, struct timer_loop_args * arg) {
-
-    arg->index = *index;
-    ////bpf_printk("TEST %d", arg->index);
-
-    if(!map_entry->triggered)
-        return 1;
-
-    // Placeholder value
-    if(arg->index == MAX_NUMBER_TIMERS - 1)
-        arg->index = NO_TIMER_AVAILABLE;
-
-    return 0;
-}*/
-
-static __always_inline int cancel_timer(struct flow_id f_id,
-    enum timer_id index) {
+static __always_inline int cancel_timer(__u32 f_id, enum timer_id index) {
 
     struct timer_trigger_id timer_id = {f_id, index};
     struct timer_trigger *map_entry = bpf_map_lookup_elem(&timer_trigger_hash, &timer_id);
@@ -634,7 +625,7 @@ static __always_inline int cancel_timer(struct flow_id f_id,
     return 0;
 }
 
-static __always_inline int restart_timer(struct flow_id f_id, __u64 time,
+static __always_inline int restart_timer(__u32 f_id, __u64 time,
     enum timer_id index) {
 
     struct timer_trigger_id timer_id = {f_id, index};
@@ -659,7 +650,7 @@ static __always_inline int restart_timer(struct flow_id f_id, __u64 time,
     return 0;
 }
 
-static __always_inline struct timer_trigger *retrieve_timer(struct flow_id f_id, enum timer_id index) {
+static __always_inline struct timer_trigger *retrieve_timer(__u32 f_id, enum timer_id index) {
     struct timer_trigger_id timer_id = {f_id, index};
     struct timer_trigger *map_entry = bpf_map_lookup_elem(&timer_trigger_hash, &timer_id);
     if(!map_entry) {
@@ -1263,7 +1254,7 @@ static __always_inline void dispatcher(void * event, enum minor_event_type type,
 static __always_inline void * scheduler(struct sched_loop_args * arg, __u8 * is_app_event,
     __u32 *minor_type) {
     struct queue_flow_info *f_info = arg->f_info;
-    struct flow_id f_id = arg->f_id;
+    __u32 f_id = arg->f_id;
 
     int returned_type = next_event(f_info);
     if(returned_type == -1)
@@ -1276,7 +1267,7 @@ static __always_inline void * scheduler(struct sched_loop_args * arg, __u8 * is_
     case APP_EVENT:
     {
         //bpf_printk("APP_EVENT IS THE LARGEST");
-        ev = generic_event_dequeue(&outer_app_hash, f_id,
+        ev = generic_event_dequeue(&outer_app_array, f_id,
             &(f_info->app_info.len_app_queue), &(f_info->app_info.app_head));
         if(!ev)
             return NULL;
@@ -1301,7 +1292,7 @@ static __always_inline void * scheduler(struct sched_loop_args * arg, __u8 * is_
     case PROG_EVENT:
     {
         //bpf_printk("PROG_EVENT IS THE LARGEST");
-        ev = generic_event_dequeue(&outer_prog_hash, f_id,
+        ev = generic_event_dequeue(&outer_prog_array, f_id,
             &(f_info->prog_info.len_prog_queue), &(f_info->prog_info.prog_head));
         if(!ev)
             return NULL;
@@ -1340,7 +1331,7 @@ static long ev_process_loop(__u32 index, struct sched_loop_args * arg) {
     return 0;
 }
 
-static __always_inline int net_ev_process(struct xdp_md *redirect_pkt, struct flow_id * f_id,
+static __always_inline int net_ev_process(struct xdp_md *redirect_pkt, __u32 * f_id,
     struct context **flow_context) {
 
     struct net_event net_ev[MAX_NET_EVENTS];

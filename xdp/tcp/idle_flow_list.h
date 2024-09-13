@@ -5,7 +5,7 @@
 #include "req_queue.h"
 
 struct idle_flow_info {
-    struct flow_id f_id;
+    __u32 f_id;
     struct pkt_info p_info;
     struct queue_flow_info q_flow_info;
     long last_time;
@@ -22,30 +22,34 @@ void init_idle_flow_array() {
     }
 }
 
-int cmp_flow_id(struct flow_id curr_f_id, struct flow_id new_f_id) {
+/*int cmp_flow_id(struct flow_id curr_f_id, struct flow_id new_f_id) {
     if(curr_f_id.src_ip == new_f_id.src_ip &&
     curr_f_id.dest_ip == new_f_id.dest_ip &&
     curr_f_id.src_port == new_f_id.src_port &&
     curr_f_id.dest_port == new_f_id.dest_port)
         return 1;
     return 0;
-}
+}*/
 
-int find_idle_flow_info(int cpu_id, struct flow_id f_id) {
+int find_idle_flow_info(int cpu_id, __u32 f_id) {
     int array_num = num_idle_flow_array[cpu_id];
 
-    struct flow_id curr_f_id;
+    __u32 curr_f_id;
     for(int i = 0; i < array_num; i++) {
         curr_f_id = idle_flow_array[cpu_id][i].f_id;
-        if(cmp_flow_id(curr_f_id, f_id)) {
+        /*if(cmp_flow_id(curr_f_id, f_id)) {
             //printf("Flow already exists!\n");
+            return 1;
+        }*/
+        if(curr_f_id == f_id) {
+            printf("idle_flow_list: flow already exists\n");
             return 1;
         }
     }
     return 0;
 }
 
-void add_idle_flow_info(int cpu_id, struct pkt_info p_info, struct flow_id f_id, struct queue_flow_info f_info) {
+void add_idle_flow_info(int cpu_id, struct pkt_info p_info, __u32 f_id, struct queue_flow_info f_info) {
     int array_num = num_idle_flow_array[cpu_id];
     //printf("%d", array_num);
 

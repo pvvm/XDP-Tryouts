@@ -38,26 +38,22 @@ enum timer_id {
 };
 
 struct flow_id {
-    __u8 src_ip;
-    __u8 dest_ip;
-    __u8 src_port;
-    __u8 dest_port;
-};
-
-struct hash_key {
-    int cpu;
+    __be32 src_ip;
+    __be32 dest_ip;
+    __be16 src_port;
+    __be16 dest_port;
 };
 
 struct app_event {
     enum minor_event_type event_type;
-    struct flow_id ev_flow_id;
+    __u32 ev_flow_id;
     __u32 data_size;
     __u64 occupied;
 };
 
 struct net_event {
     enum minor_event_type event_type;
-    struct flow_id ev_flow_id;
+    __u32 ev_flow_id;
     __be32 data_len;
     __be32 ack_seq;
     __be32 seq_num;
@@ -66,7 +62,7 @@ struct net_event {
 
 struct timer_event {
     enum minor_event_type event_type;
-    struct flow_id ev_flow_id;
+    __u32 ev_flow_id;
     __u32 seq_num;
     __u64 valid_bit;
     //__u32 teste;
@@ -74,7 +70,7 @@ struct timer_event {
 
 struct prog_event {
     enum minor_event_type event_type;
-    struct flow_id ev_flow_id;
+    __u32 ev_flow_id;
     __u64 value;
     __u32 teste;
     //__u32 teste1;
@@ -87,7 +83,7 @@ struct timer_trigger {
 };
 
 struct timer_trigger_id {
-    struct flow_id f_id;
+    __u32 f_id;
     __u32 timer_id;
 };
 
@@ -117,14 +113,6 @@ struct queue_flow_info {
         __u32 prog_head;
         __u32 prog_tail;
     } prog_info;
-};
-
-struct flow_loop_data {
-    struct flow_id f_id;
-    __u32 len_app_queue;
-    __u32 len_net_queue;
-    __u32 len_timer_queue;
-    __u32 len_prog_queue;
 };
 
 struct sent_pkt_info {
@@ -167,13 +155,9 @@ struct intermediate_output {
 
 struct sched_loop_args {
     struct queue_flow_info *f_info;
-    struct flow_id f_id;
+    __u32 f_id;
     struct context *ctx;
     struct xdp_md *redirect_pkt;
-};
-
-struct timer_loop_args {
-    __u32 index;
 };
 
 struct move_pkt_info_head_arg {
