@@ -125,22 +125,6 @@ struct {
 
 /*--------------- TIMER TRIGGER MAP ---------------*/
 
-/*struct timer_trigger_inner_array {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
-    __type(key, __u32);
-    __type(value, struct timer_trigger);
-    __uint(max_entries, MAX_NUMBER_TIMERS);
-} timer_trigger_inner_array SEC(".maps");
-
-struct timer_trigger_outer_hash {
-    __uint(type, BPF_MAP_TYPE_HASH_OF_MAPS);
-    __type(key, struct flow_id);
-    __uint(max_entries, MAX_NUMBER_FLOWS + 1);
-    __array(values, struct timer_trigger_inner_array);
-} timer_trigger_outer_hash SEC(".maps") = {
-    .values = {(void*)&timer_trigger_inner_array},
-};*/
-
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, struct timer_trigger_id);
@@ -210,22 +194,6 @@ static __always_inline __u8 parse_packet(void *data, void *data_end,
         return 0;
     }
 
-    /*__be32 saddr = iphdr->saddr; 
-    __u8 src_ip;
-    src_ip = saddr & 0xFF;
-    src_ip = ((saddr >> 8) & 0xFF) ^ src_ip;
-    src_ip = ((saddr >> 16) & 0xFF) ^ src_ip;
-    src_ip = ((saddr >> 24) & 0xFF) ^ src_ip;
-    net_ev[0].ev_flow_id.src_ip = src_ip;
-
-    __be32 daddr = iphdr->daddr;
-    __u8 dst_ip;
-    dst_ip = daddr & 0xFF;
-    dst_ip = ((daddr >> 8) & 0xFF) ^ dst_ip;
-    dst_ip = ((daddr >> 16) & 0xFF) ^ dst_ip;
-    dst_ip = ((daddr >> 24) & 0xFF) ^ dst_ip;
-    net_ev[0].ev_flow_id.dest_ip = dst_ip;*/
-
     struct flow_id flow_hash_id;
     flow_hash_id.src_ip = iphdr->saddr;
     flow_hash_id.dest_ip = iphdr->daddr;
@@ -234,24 +202,6 @@ static __always_inline __u8 parse_packet(void *data, void *data_end,
         //bpf_printk("parse_packet: error while parsing TCP header");
         return 0;
     }
-
-    /*__be16 sport = bpf_ntohs(tcph->source);
-    __u8 src_port;
-    src_port = sport & 0xFF;
-    src_port = ((sport >> 8) & 0xFF) ^ src_port;
-    net_ev[0].ev_flow_id.src_port = src_port;
-
-    __be16 dport = bpf_ntohs(tcph->dest);
-    __u8 dst_port;
-    dst_port = dport & 0xFF;
-    dst_port = ((dport >> 8) & 0xFF) ^ dst_port;
-    net_ev[0].ev_flow_id.dest_port = dst_port;*/
-
-    /*__be16 sport = bpf_ntohs(tcph->source);
-    __be16 dport = bpf_ntohs(tcph->dest);
-    __be16 sum = sport + dport;
-    net_ev[0].ev_flow_id.src_port = (sum >> 8) & 0xFF;
-    net_ev[0].ev_flow_id.dest_port = sum & 0xFF;*/
 
     flow_hash_id.src_port = bpf_ntohs(tcph->source);
     flow_hash_id.dest_port = bpf_ntohs(tcph->dest);
@@ -418,43 +368,6 @@ static __always_inline void generic_event_enqueue(void * event, enum major_event
     }
 }
 
-/*static __u64 loop_hash_info(struct bpf_map *map, struct flow_id *key, struct queue_flow_info *val, struct flow_loop_data *data) {
-    __u32 current_max = data->len_app_queue + data->len_net_queue + data->len_timer_queue + data->len_prog_queue;
-
-    __u32 current_sum = val->app_info.len_app_queue + val->net_info.len_net_queue +
-        val->timer_info.len_timer_queue + val->prog_info.len_prog_queue;
-
-    if(current_sum > current_max) {
-        data->len_app_queue = val->app_info.len_app_queue;
-        data->len_net_queue = val->net_info.len_net_queue;
-        data->len_timer_queue = val->timer_info.len_timer_queue;
-        data->len_prog_queue = val->prog_info.len_prog_queue;
-        data->f_id = *key;
-    }
-
-    return 0;
-}
-
-static __always_inline int next_flow(struct flow_id *flow, int cpu_id) {
-    struct inner_flow_info_hash *flow_info_hash = bpf_map_lookup_elem(&outer_flow_info_array, &cpu_id);
-    if(!flow_info_hash) {
-        //bpf_printk("next_flow: Couldn't get entry from flow info outer map");
-        return 0;
-    }
-    
-    struct flow_loop_data data = {{0, 0, 0, 0}, 0, 0, 0, 0};
-
-    bpf_for_each_map_elem(flow_info_hash, loop_hash_info, &data, 0);
-
-    if(data.f_id.src_ip == 0 && data.f_id.dest_ip == 0 &&
-        data.f_id.src_port == 0 && data.f_id.dest_port == 0)
-        return 0;
-
-    *flow = data.f_id;
-
-    return 1;
-}*/
-
 static __always_inline int next_event(struct queue_flow_info * f_info) {
     // App, net, timer, prog. App has the lowest priority, timer has the highest
     __u32 type_priorities[3] = {1, 3, 2};
@@ -519,20 +432,49 @@ static __always_inline void * timer_event_dequeue(__u32 f_id,
     return NULL;
 }
 
-static __always_inline void * generic_event_dequeue(void * outer_event_array, __u32 f_id,
+static __always_inline struct prog_event * prog_event_dequeue(__u32 f_id,
     int * queue_len, int * head) {
     if(*queue_len == 0) {
         bpf_printk("prog_event_dequeue: queue is empty, unable to dequeue an event");
         return NULL;
     }
     
-    void * inner_flow_array = bpf_map_lookup_elem(outer_event_array, &f_id);
+    void * inner_flow_array = bpf_map_lookup_elem(&outer_prog_array, &f_id);
     if(!inner_flow_array) {
         bpf_printk("event_dequeue: couldn't get entry from flow info outer map");
         return NULL;
     }
 
-    void * event = bpf_map_lookup_elem(inner_flow_array, head);
+    struct prog_event * event = bpf_map_lookup_elem(inner_flow_array, head);
+    if(!event) {
+        bpf_printk("event_dequeue: couldn't get entry from flow info inner map");
+        return NULL;
+    }
+
+    if(*head < MAX_EVENT_QUEUE_LEN - 1)
+        *head += 1;
+    else
+        *head = 0;
+    
+    *queue_len -= 1;
+
+    return event;
+}
+
+static __always_inline struct app_event * app_event_dequeue(__u32 f_id,
+    int * queue_len, int * head) {
+    if(*queue_len == 0) {
+        bpf_printk("prog_event_dequeue: queue is empty, unable to dequeue an event");
+        return NULL;
+    }
+    
+    void * inner_flow_array = bpf_map_lookup_elem(&outer_app_array, &f_id);
+    if(!inner_flow_array) {
+        bpf_printk("event_dequeue: couldn't get entry from flow info outer map");
+        return NULL;
+    }
+
+    struct app_event * event = bpf_map_lookup_elem(inner_flow_array, head);
     if(!event) {
         bpf_printk("event_dequeue: couldn't get entry from flow info inner map");
         return NULL;
@@ -853,8 +795,7 @@ static __always_inline void fast_retr_rec_ep(struct net_event *event, struct con
 
 static __always_inline void slows_congc_ep(struct net_event *event, struct context *ctx,
     struct intermediate_output *inter_output, struct xdp_md *redirect_pkt) {
-    
-    // Q: eBPF verifier works in mysterious ways
+
     if(inter_output->skip_ack_eps)
         return;
 
@@ -903,9 +844,6 @@ static __always_inline void ack_net_ep(struct net_event *event, struct context *
     if(effective_window > ctx->last_rwnd_size)
         effective_window = ctx->last_rwnd_size;
     __u32 bytes_to_send = 0;
-
-    // Q: eBPF verifier works in mysterious ways
-    //bpf_printk("\nbytes: %d, ack_seq: %d", bytes_to_send, event->ack_seq); 
 
     // Fast retransmits the first unack packet
     if(ctx->duplicate_acks == 3) {
@@ -1013,8 +951,6 @@ static long insert_recv_buffer(__u32 index, struct insert_data_array_args *arg) 
         arg->new_elem = temp;
     }
 
-    // Q: this might be problematic to translate from MTP to XDP. We need to keep
-    // doing boundary checks, even if it's obviously unnecessary
     if(arg->curr_index >= MAX_NUM_CTX_PKT_INFO)
         return 1;
     
@@ -1146,11 +1082,7 @@ static __always_inline void app_feedback_ep(struct net_event *event, struct cont
 
 static __always_inline void ack_timeout_ep(struct timer_event *event, struct context *ctx,
     struct intermediate_output *inter_output, struct xdp_md *redirect_pkt) {
-    // Resend packet
-    // Q: similar problem as I had in app_event, but with timer_event seq_num. Had to change the order in struct definition
-    //bpf_printk("SEND_NXT: %d, SEND_UNA: %d", ctx->send_next, ctx->send_una);
-    //bpf_printk("FLOW: %d", event->ev_flow_id.src_port);
-    
+
     //if(ctx->send_una >= event->seq_num) {
         // Slow start after a timeout
         ctx->cwnd_size = SMSS * 3;
@@ -1203,129 +1135,112 @@ static __always_inline void ack_timeout_ep(struct timer_event *event, struct con
     //}
 }
 
-static __always_inline void dispatcher(void * event, enum minor_event_type type,
-    struct context *ctx, struct xdp_md *redirect_pkt) {
+static __always_inline void app_dispatcher(struct app_event * event,
+struct context *ctx, struct xdp_md *redirect_pkt) {
+	struct intermediate_output inter_output;
+	switch (event->event_type)
+	{
+	case SEND:
+		send_ep(event, ctx, &inter_output, redirect_pkt);
+		break;
+	default:
+		break;
+	}
+}
 
-    struct intermediate_output inter_output;
-
-    switch (type)
-    {
-    case SEND:
-        //bpf_printk("SEND");
-        send_ep(event, ctx, &inter_output, redirect_pkt);
-       //bpf_printk("SEND");
-        break;
-    
-    case ACK:
-        //bpf_printk("ACK");
+static __always_inline void net_dispatcher(struct net_event * event,
+struct context *ctx, struct xdp_md *redirect_pkt) {
+	struct intermediate_output inter_output;
+	switch (event->event_type)
+	{
+	case ACK:
         rto_ep(event, ctx, &inter_output, redirect_pkt);
         fast_retr_rec_ep(event, ctx, &inter_output, redirect_pkt);
         slows_congc_ep(event, ctx, &inter_output, redirect_pkt);
         ack_net_ep(event, ctx, &inter_output, redirect_pkt);
-        //bpf_printk("ACK");
         break;
-
     case DATA:
-        //bpf_printk("DATA");
         data_net_ep(event, ctx, &inter_output, redirect_pkt);
         send_ack(event, ctx, &inter_output, redirect_pkt);
         app_feedback_ep(event, ctx, &inter_output, redirect_pkt);
-       //bpf_printk("DATA");
         break;
-    
-    case MISS_ACK:
-        //bpf_printk("MISS_ACK");
+	default:
+		break;
+	}
+}
+
+static __always_inline void timer_dispatcher(struct timer_event * event,
+struct context *ctx, struct xdp_md *redirect_pkt) {
+	struct intermediate_output inter_output;
+	switch (event->event_type)
+	{
+	case MISS_ACK:
         ack_timeout_ep(event, ctx, &inter_output, redirect_pkt);
-       //bpf_printk("MISS_ACK");
         break;
-    
+	default:
+		break;
+	}
+}
+
+static __always_inline void prog_dispatcher(struct prog_event * event,
+struct context *ctx, struct xdp_md *redirect_pkt) {
+	//struct intermediate_output inter_output;
+	switch (event->event_type)
+	{
     case PROG_TEST:
         // So we won't get an error
         if(0)
             generic_event_enqueue(event, PROG_EVENT);
-        //bpf_printk("PROG_TEST");
         break;
-    
-    default:
-        return;
-    }
+	default:
+		break;
+	}
 }
 
-static __always_inline void * scheduler(struct sched_loop_args * arg, __u8 * is_app_event,
-    __u32 *minor_type) {
-    struct queue_flow_info *f_info = arg->f_info;
-    __u32 f_id = arg->f_id;
+static long ev_process_loop(__u32 index, struct sched_loop_args * arg) {
+    int returned_type = next_event(arg->f_info);
+    if(returned_type == -1) {
+        return 1;
+	}
 
-    int returned_type = next_event(f_info);
-    if(returned_type == -1)
-        return NULL;
-
-    void * ev;
-
-    switch (returned_type)
+	switch (returned_type)
     {
     case APP_EVENT:
     {
         //bpf_printk("APP_EVENT IS THE LARGEST");
-        ev = generic_event_dequeue(&outer_app_array, f_id,
-            &(f_info->app_info.len_app_queue), &(f_info->app_info.app_head));
+    	struct app_event *ev = app_event_dequeue(arg->f_id,
+            &(arg->f_info->app_info.len_app_queue), &(arg->f_info->app_info.app_head));
         if(!ev)
-            return NULL;
-        struct app_event * cast_ev = (struct app_event *) ev;
-        *minor_type = cast_ev->event_type;
-        *is_app_event = 1;
+            return 1;
+        app_dispatcher(ev, arg->ctx, arg->redirect_pkt);
+		__sync_fetch_and_xor(&ev->occupied, 1);
         break;
     }
     
     case TIMER_EVENT:
     {
         //bpf_printk("TIMER_EVENT IS THE LARGEST");
-        ev = timer_event_dequeue(f_id,
-            &(f_info->timer_info.len_timer_queue), &(f_info->timer_info.timer_head));
+        struct timer_event *ev = timer_event_dequeue(arg->f_id,
+            &(arg->f_info->timer_info.len_timer_queue), &(arg->f_info->timer_info.timer_head));
         if(!ev)
-            return NULL;
-        struct timer_event * cast_ev = (struct timer_event *) ev;
-        *minor_type = cast_ev->event_type;
+            return 1;
+        timer_dispatcher(ev, arg->ctx, arg->redirect_pkt);
         break;
     }
     
     case PROG_EVENT:
     {
         //bpf_printk("PROG_EVENT IS THE LARGEST");
-        ev = generic_event_dequeue(&outer_prog_array, f_id,
-            &(f_info->prog_info.len_prog_queue), &(f_info->prog_info.prog_head));
+        struct prog_event *ev = prog_event_dequeue(arg->f_id,
+            &(arg->f_info->prog_info.len_prog_queue), &(arg->f_info->prog_info.prog_head));
         if(!ev)
-            return NULL;
-        struct prog_event * cast_ev = (struct prog_event *) ev;
-        *minor_type = cast_ev->event_type;
+            return 1;
+        prog_dispatcher(ev, arg->ctx, arg->redirect_pkt);
         break;
     }
     
     default:
-        return NULL;
-    }
-    return ev;
-}
-
-static long ev_process_loop(__u32 index, struct sched_loop_args * arg) {
-    __u8 is_app_event = 0;
-    __u32 minor_type;
-    void * ev = scheduler(arg, &is_app_event, &minor_type);
-    if(!ev)
         return 1;
-
-    if(is_app_event) {
-        struct app_event *app_ev = (struct app_event *)ev;
-        struct app_event new_ev;
-        new_ev.ev_flow_id = app_ev->ev_flow_id;
-        new_ev.event_type = app_ev->event_type;
-        new_ev.occupied = app_ev->occupied;
-        new_ev.data_size = app_ev->data_size;
-        // Set occupied bit to 0
-        __sync_fetch_and_xor(&app_ev->occupied, 1);
-        dispatcher(&new_ev, minor_type, arg->ctx, arg->redirect_pkt);
-    } else {
-        dispatcher(ev, minor_type, arg->ctx, arg->redirect_pkt);
     }
 
     return 0;
@@ -1354,10 +1269,10 @@ static __always_inline int net_ev_process(struct xdp_md *redirect_pkt, __u32 * f
     meta_hdr->cwnd_size = (*flow_context)->cwnd_size;
 
     if(ret == 1) // One network packet
-        dispatcher(&net_ev[0], net_ev[0].event_type, *flow_context, redirect_pkt);
+        net_dispatcher(&net_ev[0], *flow_context, redirect_pkt);
     if(ret == 2) { // Two network packets
-        dispatcher(&net_ev[0], net_ev[0].event_type, *flow_context, redirect_pkt);
-        dispatcher(&net_ev[1], net_ev[1].event_type, *flow_context, redirect_pkt);
+        net_dispatcher(&net_ev[0], *flow_context, redirect_pkt);
+        net_dispatcher(&net_ev[0], *flow_context, redirect_pkt);
     }
 
     return 1;
