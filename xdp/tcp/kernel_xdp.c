@@ -1135,7 +1135,7 @@ static __always_inline void ack_timeout_ep(struct timer_event *event, struct con
     //}
 }
 
-static __always_inline void app_dispatcher(struct app_event * event,
+static __always_inline void app_event_dispatcher(struct app_event * event,
 struct context *ctx, struct xdp_md *redirect_pkt) {
 	struct intermediate_output inter_output;
 	switch (event->event_type)
@@ -1148,7 +1148,7 @@ struct context *ctx, struct xdp_md *redirect_pkt) {
 	}
 }
 
-static __always_inline void net_dispatcher(struct net_event * event,
+static __always_inline void net_event_dispatcher(struct net_event * event,
 struct context *ctx, struct xdp_md *redirect_pkt) {
 	struct intermediate_output inter_output;
 	switch (event->event_type)
@@ -1169,7 +1169,7 @@ struct context *ctx, struct xdp_md *redirect_pkt) {
 	}
 }
 
-static __always_inline void timer_dispatcher(struct timer_event * event,
+static __always_inline void timer_event_dispatcher(struct timer_event * event,
 struct context *ctx, struct xdp_md *redirect_pkt) {
 	struct intermediate_output inter_output;
 	switch (event->event_type)
@@ -1182,7 +1182,7 @@ struct context *ctx, struct xdp_md *redirect_pkt) {
 	}
 }
 
-static __always_inline void prog_dispatcher(struct prog_event * event,
+static __always_inline void prog_event_dispatcher(struct prog_event * event,
 struct context *ctx, struct xdp_md *redirect_pkt) {
 	//struct intermediate_output inter_output;
 	switch (event->event_type)
@@ -1212,7 +1212,7 @@ static long ev_process_loop(__u32 index, struct sched_loop_args * arg) {
             &(arg->f_info->app_info.len_app_queue), &(arg->f_info->app_info.app_head));
         if(!ev)
             return 1;
-        app_dispatcher(ev, arg->ctx, arg->redirect_pkt);
+        app_event_dispatcher(ev, arg->ctx, arg->redirect_pkt);
 		__sync_fetch_and_xor(&ev->occupied, 1);
         break;
     }
@@ -1224,7 +1224,7 @@ static long ev_process_loop(__u32 index, struct sched_loop_args * arg) {
             &(arg->f_info->timer_info.len_timer_queue), &(arg->f_info->timer_info.timer_head));
         if(!ev)
             return 1;
-        timer_dispatcher(ev, arg->ctx, arg->redirect_pkt);
+        timer_event_dispatcher(ev, arg->ctx, arg->redirect_pkt);
         break;
     }
     
@@ -1235,7 +1235,7 @@ static long ev_process_loop(__u32 index, struct sched_loop_args * arg) {
             &(arg->f_info->prog_info.len_prog_queue), &(arg->f_info->prog_info.prog_head));
         if(!ev)
             return 1;
-        prog_dispatcher(ev, arg->ctx, arg->redirect_pkt);
+        prog_event_dispatcher(ev, arg->ctx, arg->redirect_pkt);
         break;
     }
     
@@ -1269,10 +1269,10 @@ static __always_inline int net_ev_process(struct xdp_md *redirect_pkt, __u32 * f
     meta_hdr->cwnd_size = (*flow_context)->cwnd_size;
 
     if(ret == 1) // One network packet
-        net_dispatcher(&net_ev[0], *flow_context, redirect_pkt);
+        net_event_dispatcher(&net_ev[0], *flow_context, redirect_pkt);
     if(ret == 2) { // Two network packets
-        net_dispatcher(&net_ev[0], *flow_context, redirect_pkt);
-        net_dispatcher(&net_ev[0], *flow_context, redirect_pkt);
+        net_event_dispatcher(&net_ev[0], *flow_context, redirect_pkt);
+        net_event_dispatcher(&net_ev[0], *flow_context, redirect_pkt);
     }
 
     return 1;
