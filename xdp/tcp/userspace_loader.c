@@ -50,18 +50,18 @@
 
 #define BUFFER_SIZE			1440000000
 
-#define NUM_FLOWS_TEST		(32)
+#define NUM_FLOWS_TEST		(1 * MAX_NUMBER_CORES)
 
 static const char *default_filename = "kernel_xdp.o";
 
 static const char *default_progname = "net_arrive";
 
-int cwnd_size[9999999];
+//int cwnd_size[9999999];
 clock_t last_clock;
 int counter_cwnd_ex = 0;
 struct timespec start_per_flow[NUM_FLOWS_TEST], end_per_flow[NUM_FLOWS_TEST];
 //clock_t start_time[NUM_FLOWS_TEST], end_time[NUM_FLOWS_TEST];
-clock_t curr_clock[9999999];
+//clock_t curr_clock[9999999];
 int packets_per_core[MAX_NUMBER_CORES];
 int packets_per_flow[NUM_FLOWS_TEST];
 struct timespec all_finished_time;
@@ -497,12 +497,9 @@ static bool process_packet(uint8_t *pkt, struct xsk_socket_info *xsk) {
 		}
 
 		/*clock_t curr = clock();
-		if(curr - last_clock > 2000) {
-			cwnd_size[counter_cwnd_ex] = meta_hdr->cwnd_size;
-			curr_clock[counter_cwnd_ex] = curr;
-			last_clock = curr;
-			counter_cwnd_ex++;
-		}*/
+		cwnd_size[counter_cwnd_ex] = meta_hdr->cwnd_size;
+		curr_clock[counter_cwnd_ex] = curr;
+		counter_cwnd_ex++;*/
 
 		if(counter_app_meta > 0)
 			write_data_to_buffer(xsk->cpu_id, array_app_meta, counter_app_meta, data);
@@ -1259,14 +1256,23 @@ int main(int argc, char **argv)
 	}
 	printf("\n--------------------\n");
 	for(int i = 0; i < MAX_NUMBER_CORES; i++) {
-		printf("Average time taken for core %d: %f seconds\n", i, average_time_per_core[i] / (NUM_FLOWS_TEST / MAX_NUMBER_CORES));
+		//printf("Average time taken for core %d: %f seconds\n", i, average_time_per_core[i] / (NUM_FLOWS_TEST / MAX_NUMBER_CORES));
+		printf("%f\n", average_time_per_core[i] / (NUM_FLOWS_TEST / MAX_NUMBER_CORES));
 	}
 	printf("\n--------------------\n");
 	printf("Average time taken in total: %f seconds\n", average_time_total / NUM_FLOWS_TEST);
 
 	/*FILE *file = fopen("cwnd_size.txt", "w");
+
+	double last_time = 9999999999;
 	for(int i = 0; i < counter_cwnd_ex; i++) {
-		fprintf(file, "%f %d\n", (double)(curr_clock[i] - start_time) / CLOCKS_PER_SEC, cwnd_size[i]);
+		double curr_time = (double)(curr_clock[i] - curr_clock[0]) / CLOCKS_PER_SEC;
+		if(curr_time > 0.005)
+			break;
+
+		if(last_time != curr_time)
+			fprintf(file, "%f %d\n", curr_time, cwnd_size[i]);
+		last_time = curr_time;
 	}
 	fclose(file);*/
 

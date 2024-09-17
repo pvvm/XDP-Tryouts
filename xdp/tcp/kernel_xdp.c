@@ -552,10 +552,10 @@ static __always_inline int cancel_timer(__u32 f_id, enum timer_id index) {
         return -1;
     }
 
-    if(!map_entry->triggered) {
+    //if(!map_entry->triggered) {
         //bpf_printk("cancel_timer: timer isn't currently triggered");
-        return -1;
-    }
+        //return -1;
+    //}
 
     if(!bpf_timer_cancel(&(map_entry->timer))) {
         //bpf_printk("\n%d %d", f_id.src_port, f_id.dest_port);
@@ -618,10 +618,10 @@ static __always_inline int initialize_timer(struct timer_event event,
         return -1;
     }
 
-    if(map_entry->triggered) {
+    //if(map_entry->triggered) {
         //bpf_printk("initialize_timer: timer already triggered");
-        return -1;
-    }
+    //    return -1;
+    //}
 
     map_entry->t_event = event;
     map_entry->triggered = 1;
