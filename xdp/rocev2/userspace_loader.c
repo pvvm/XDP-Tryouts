@@ -977,7 +977,7 @@ void distribute_requests(int *map_fds, int context_fd, int flow_info_fd, int tai
 		event.ev_flow_id = i;
 		event.lkey = i;
 		event.event_type = WRITE_WQE;
-		event.ack_req = 0;
+		event.ack_req = 1;
 		event.addr = 0;
 		event.compare = 0;
 		event.qp_id = i;

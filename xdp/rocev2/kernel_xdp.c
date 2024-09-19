@@ -233,6 +233,8 @@ struct hdr_cursor nh, void *data_end, struct udphdr *udph, struct BTHeader *bthd
 		if(parse_aethdr(&nh, data_end, &aeth) == -1)
 			return 0;
 		net_ev[0].event_type = ACK;
+		net_ev[0].psn = bthdr->psn;
+		net_ev[0].MSN = aeth->MSN;
 		return 3;
 	}
     return 1;
@@ -318,7 +320,6 @@ static __always_inline __u8 mutate_pkt(struct xdp_md *redirect_pkt, struct net_e
     __u32 new_header_len = sizeof(struct metadata_hdr);
 
     struct metadata_hdr new_hdr;
-    new_hdr.data_len = pkt_len - original_header_len;
 
     __u8 ret = parse_packet(data, data_end, net_ev, &new_hdr);
     if(!ret) {
@@ -330,6 +331,7 @@ static __always_inline __u8 mutate_pkt(struct xdp_md *redirect_pkt, struct net_e
 	} else if(ret == 3) {
 		original_header_len += sizeof(struct AETHeader);
 	}
+	new_hdr.data_len = pkt_len - original_header_len;
 
     bpf_xdp_adjust_head(redirect_pkt, original_header_len - new_header_len);
 
@@ -703,7 +705,7 @@ static __always_inline int initialize_timer(struct timer_event event,
 
     long int err = bpf_timer_init(&(map_entry->timer), &timer_trigger_hash, CLOCK_BOOTTIME);
     if(err != 0) {
-        bpf_printk("Error while initializing timer: %ld", err);
+        //bpf_printk("Error while initializing timer: %ld", err);
     }
 
     // Sets the function to be called after the timer triggers
@@ -1053,6 +1055,18 @@ static __always_inline void intermPSNProcessor(struct prog_event *ev, struct con
 {
 	out->psn = ev->psn;
 }
+
+static __always_inline void initACKTimerProcessor_app_event(struct app_event *ev, struct context *ctx, struct interm_out *out, struct xdp_md *redirect_pkt) {
+	if( ev->ack_req )
+	{
+		struct timer_event timer_ev;
+		timer_ev.ev_flow_id = ev->ev_flow_id;
+		timer_ev.event_type = MISS_ACK;
+		ctx->timer_ack_timeout.duration = 1000000000 * ctx->transport_timer;
+		initialize_timer( timer_ev , ctx->timer_ack_timeout.duration , timer_ack_timeout );
+	}
+}
+
 static long loop_function3(__u32 index, struct loop_arg3 *arg)
 {
 	if(!(arg->i < arg->ctx->num_sent_packets )) {
@@ -1159,15 +1173,6 @@ static __always_inline void TransmitProcessor_app_event(struct app_event *ev, st
 		new_event.psn = out->psn + number_packets_sent;
 		new_event.ack_req = ev->ack_req;
 		generic_event_enqueue( & new_event , PROG_EVENT );
-	}*/
-	
-	/*if( ev->ack_req )
-	{
-		struct timer_event timer_ev;
-		timer_ev.ev_flow_id = ev->ev_flow_id;
-		timer_ev.event_type = MISS_ACK;
-		ctx->timer_ack_timeout.duration = 1000000000 * ctx->transport_timer;
-		initialize_timer( timer_ev , ctx->timer_ack_timeout.duration , timer_ack_timeout );
 	}*/
 	
 	return;
@@ -1554,7 +1559,7 @@ static __always_inline void RecvDataProcessor(struct net_event *ev, struct conte
 
 static __always_inline void WriteDataProcessor(struct net_event *ev, struct context *ctx, struct interm_out *out, struct xdp_md *redirect_pkt)
 {
-	bpf_printk("WRITE_DATA");
+	bpf_printk("WRITE_DATA %d %d", ev->psn, ctx->ePSN);
 
 	struct net_metadata pkt_ev;
 	pkt_ev.type_metadata = IS_NET_METADATA;
@@ -1592,13 +1597,10 @@ static __always_inline void WriteDataProcessor(struct net_event *ev, struct cont
 	if( ev->psn == ctx->ePSN )
 	{
 		ctx->ePSN = ctx->ePSN + 1;
-		if(0 >= 500){
-			return;
-		}__u8 addr = ctx->RQ_list[ 0 ].addr;
 		struct app_metadata fb_new_event;
 		fb_new_event.type_metadata = IS_APP_METADATA;
-		fb_new_event.address = addr;
-		fb_new_event.offset = ev->psn - ctx->write_first_psn;
+		fb_new_event.address = ev->raddr;
+		fb_new_event.offset = (ev->psn - ctx->write_first_psn) * ctx->MTU;
 		fb_new_event.length = ev->data_len;
 		fb_new_event.write_to_mem = 1;
 		if((void *)(long)redirect_pkt->data + sizeof(struct metadata_hdr) > (void *)(long)redirect_pkt->data_end) {
@@ -2009,6 +2011,7 @@ static __always_inline void AtomicDataProcessor(struct net_event *ev, struct con
 	
 	return;
 }
+
 static __always_inline void AtomicAckProcessor(struct prog_event *ev, struct context *ctx, struct interm_out *out, struct xdp_md *redirect_pkt)
 {
 	struct net_metadata pkt_ev;
@@ -2058,14 +2061,331 @@ static __always_inline void AtomicAckProcessor(struct prog_event *ev, struct con
 	ctx->ePSN = ctx->ePSN + 1;
 	return;
 }*/
-/*static __always_inline void MissAckProcessor(struct timer_event *ev, struct context *ctx, struct interm_out *out, struct xdp_md *redirect_pkt)
+
+static long loop_function11(__u32 index, struct loop_arg11 *arg)
 {
-	if( ctx->num_sent_packets > 0 )
+	if(!(arg->i < arg->ctx->num_responder_packets )) {
+		return 1;
+	}
+	if(arg->i >= 500){
+		return 1;
+	}
+	if((void *)(long)arg->redirect_pkt->data + sizeof(struct metadata_hdr) > (void *)(long)arg->redirect_pkt->data_end) {
+		return 1;
+	}struct metadata_hdr *meta_hdr = (struct metadata_hdr *)(long)arg->redirect_pkt->data;
+	if(meta_hdr->metadata_end > 4000) {
+		return 1;
+	}if((void *)(long)arg->redirect_pkt->data + (meta_hdr->metadata_end) + sizeof(struct net_metadata) > (void *)(long)arg->redirect_pkt->data_end) {
+		return 1;
+	}__builtin_memcpy((void *)(long)arg->redirect_pkt->data + (meta_hdr->metadata_end), &(arg->ctx->responder_packets[ arg->i ].pkt_ev), sizeof(struct net_metadata));
+	meta_hdr->metadata_end += sizeof(struct net_metadata);
+	arg->counter_pkts = arg->counter_pkts + 1;
+	arg->i = arg->i + 1 ;
+	return 0;
+}
+static long loop_function12(__u32 index, struct loop_arg12 *arg)
+{
+	if(!(arg->i < arg->ctx->num_responder_packets - arg->counter_pkts )) {
+		return 1;
+	}
+	if(arg->i >= 500 || arg->i + arg->counter_pkts >= 500){
+		return 1;
+	}arg->ctx->responder_packets[ arg->i ] = arg->ctx->responder_packets[ arg->i + arg->counter_pkts ];
+	arg->i = arg->i + 1 ;
+	return 0;
+}
+static __always_inline void ResponderProcessor(struct prog_event *ev, struct context *ctx, struct interm_out *out, struct xdp_md *redirect_pkt)
+{
+	__u32 counter_pkts = 0;
+	__u32 i = 0 ;
+	struct loop_arg11 arg11;
+	arg11.ctx = ctx;
+	arg11.i = i;
+	arg11.redirect_pkt = redirect_pkt;
+	arg11.counter_pkts = counter_pkts;
+	bpf_loop(100, loop_function11, &arg11, 0);
+
+	counter_pkts = arg11.counter_pkts;
+	bpf_printk("%d", counter_pkts);
+	i = 0 ;
+	struct loop_arg12 arg12;
+	arg12.ctx = ctx;
+	arg12.i = i;
+	arg12.counter_pkts = counter_pkts;
+	bpf_loop(100, loop_function12, &arg12, 0);
+	ctx->num_responder_packets = ctx->num_responder_packets - counter_pkts;
+	return;
+}
+
+static long loop_function13(__u32 index, struct loop_arg13 *arg)
+{
+	if(!(arg->i < arg->ctx->num_sent_packets )) {
+		return 1;
+	}
+	if(arg->i >= 500){
+		return 1;
+	}if( arg->ctx->sent_packets[ arg->i ].ack_req )
 	{
-		if(0 >= 500){
-			return;
-		}struct net_metadata pkt_ev = ctx->sent_packets[ 0 ].pkt_ev;
+		if(arg->i >= 500){
+			return 1;
+		}arg->psn_ack_req = arg->ctx->sent_packets[ arg->i ].psn;
+		return 1;
+	}
+	else
+	{
+		if(arg->i >= 500){
+			return 1;
+		}if( arg->ctx->sent_packets[ arg->i ].psn > arg->ev->psn )
+		{
+			return 1;
+		}
+		
+	}
+	
+	arg->pkt_counter = arg->pkt_counter + 1;
+	arg->i = arg->i + 1 ;
+	return 0;
+}
+static long loop_function14(__u32 index, struct loop_arg14 *arg)
+{
+	if(!(arg->i < arg->ctx->num_sent_packets )) {
+		return 1;
+	}
+	if(arg->i >= 500){
+		return 1;
+	}if( arg->ctx->sent_packets[ arg->i ].ack_req )
+	{
+		struct timer_event timer_ev;
+		timer_ev.ev_flow_id = arg->ev->ev_flow_id;
+		timer_ev.event_type = MISS_ACK;
+		arg->ctx->timer_ack_timeout.duration = 1000000000 * arg->ctx->transport_timer;
+		initialize_timer( timer_ev , arg->ctx->timer_ack_timeout.duration , timer_ack_timeout );
+		//restart_timer( arg->ev->ev_flow_id , arg->ctx->timer_ack_timeout.duration , timer_ack_timeout );
+		return 1;
+	}
+	
+	arg->i = arg->i + 1 ;
+	return 0;
+}
+static __always_inline void AckProcessor(struct net_event *ev, struct context *ctx, struct interm_out *out, struct xdp_md *redirect_pkt)
+{
+	out->pkt_counter = 0;
+	if(0 >= 500){
+		return;
+	}if( ev->psn == ctx->sent_packets[ 0 ].psn )
+	{
+		cancel_timer( ev->ev_flow_id , timer_ack_timeout );
+	}
+	
+	__u32 pkt_counter = 1;
+	__u32 psn_ack_req = ev->psn;
+	__u32 i = 0 ;
+	struct loop_arg13 arg13;
+	arg13.ctx = ctx;
+	arg13.i = i;
+	arg13.psn_ack_req = psn_ack_req;
+	arg13.ev = ev;
+	arg13.pkt_counter = pkt_counter;
+	bpf_loop(100, loop_function13, &arg13, 0);
+
+	pkt_counter = arg13.pkt_counter;
+
+	psn_ack_req = arg13.psn_ack_req;
+	/*if( psn_ack_req != ev->psn )
+	{
+		struct prog_event new_event;
+		new_event.ev_flow_id = ev->ev_flow_id;
+		new_event.event_type = TRANSMIT_EVENT;
+		new_event.psn = psn_ack_req;
+		new_event.ack_req = 1;
+		generic_event_enqueue( & new_event , PROG_EVENT );
+	}*/
+	
+	ctx->LSN = ev->credit_count + ev->MSN;
+	i = 0 ;
+	struct loop_arg14 arg14;
+	arg14.ctx = ctx;
+	arg14.i = i;
+	arg14.ev = ev;
+	bpf_loop(100, loop_function14, &arg14, 0);
+	out->pkt_counter = pkt_counter;
+	//bpf_printk("PKT_COUNTER: %d", out->pkt_counter);
+	return;
+}
+/*static long loop_function15(__u32 index, struct loop_arg15 *arg)
+{
+	if(!(arg->i < arg->ctx->num_sent_packets )) {
+		return 1;
+	}
+	if(arg->i >= 500){
+		return 1;
+	}if( arg->ctx->sent_packets[ arg->i ].ack_req )
+	{
+		if(arg->i >= 500){
+			return 1;
+		}arg->psn_ack_req = arg->ctx->sent_packets[ arg->i ].psn;
+		return 1;
+	}
+	else
+	{
+		if(arg->i >= 500){
+			return 1;
+		}if( arg->ctx->sent_packets[ arg->i ].psn > arg->ev->psn )
+		{
+			return 1;
+		}
+		
+	}
+	
+	arg->pkt_counter = arg->pkt_counter + 1;
+	arg->i = arg->i + 1 ;
+	return 0;
+}
+static __always_inline void NackProcessor(struct net_event *ev, struct context *ctx, struct interm_out *out, struct xdp_md *redirect_pkt)
+{
+	out->pkt_counter = 0;
+	ev->ack_req = 1;
+	if( ev->type_nack )
+	{
+		__u32 pkt_counter = 0;
+		__u32 psn_ack_req = ev->psn;
+		__u32 i = 0 ;
+		struct loop_arg15 arg15;
+		arg15.ctx = ctx;
+		arg15.i = i;
+		arg15.psn_ack_req = psn_ack_req;
+		arg15.ev = ev;
+		arg15.pkt_counter = pkt_counter;
+		bpf_loop(100, loop_function15, &arg15, 0);
+		struct prog_event new_event;
+		new_event.ev_flow_id = ev->ev_flow_id;
+		new_event.event_type = TRANSMIT_EVENT;
+		ev->psn = psn_ack_req;
+		generic_event_enqueue( & new_event , PROG_EVENT );
+		out->pkt_counter = pkt_counter;
+	}
+	
+	return;
+}*/
+static long loop_function16(__u32 index, struct loop_arg16 *arg)
+{
+	if(!(arg->i < arg->ctx->num_SQ_list )) {
+		return 1;
+	}
+	if(arg->i >= 500){
+		return 1;
+	}if( arg->ctx->sent_packets[ arg->i ].wr_id == arg->ev->wr_id )
+	{
+		return 1;
+	}
+	
+	arg->remove_counter = arg->remove_counter + 1;
+	arg->i = arg->i + 1 ;
+	return 0;
+}
+static long loop_function17(__u32 index, struct loop_arg17 *arg)
+{
+	if(!(arg->i < arg->ctx->num_sent_packets - arg->out->pkt_counter )) {
+		return 1;
+	}
+	if(arg->i >= 500 || arg->i + arg->out->pkt_counter >= 500){
+		return 1;
+	}arg->ctx->sent_packets[ arg->i ] = arg->ctx->sent_packets[ arg->i + arg->out->pkt_counter ];
+	arg->i = arg->i + 1 ;
+	return 0;
+}
+static long loop_function18(__u32 index, struct loop_arg18 *arg)
+{
+	if(!(arg->i < arg->ctx->num_SQ_list - arg->remove_counter )) {
+		return 1;
+	}
+	/*struct app_metadata fb_new_event;
+	fb_new_event.type_metadata = IS_APP_METADATA;
+	fb_new_event.write_to_mem = 0;
+	fb_new_event.fb_type = 0;
+	fb_new_event.bytes = arg->ev->length;
+	if((void *)(long)arg->redirect_pkt->data + sizeof(struct metadata_hdr) > (void *)(long)arg->redirect_pkt->data_end) {
+		return 1;
+	}struct metadata_hdr *meta_hdr = (struct metadata_hdr *)(long)arg->redirect_pkt->data;
+	if(meta_hdr->metadata_end > 4000) {
+		return 1;
+	}if((void *)(long)arg->redirect_pkt->data + (meta_hdr->metadata_end) + sizeof(fb_new_event) > (void *)(long)arg->redirect_pkt->data_end) {
+		return 1;
+	}__builtin_memcpy((void *)(long)arg->redirect_pkt->data + (meta_hdr->metadata_end), &fb_new_event, sizeof(fb_new_event));
+	meta_hdr->metadata_end += sizeof(fb_new_event);*/
+	if(arg->i >= 500 || arg->i + arg->remove_counter >= 500){
+		return 1;
+	}arg->ctx->SQ_list[ arg->i ] = arg->ctx->SQ_list[ arg->i + arg->remove_counter ];
+	arg->i = arg->i + 1 ;
+	return 0;
+}
+static __always_inline void RemoveSQHelperProcessor(struct net_event *ev, struct context *ctx, struct interm_out *out, struct xdp_md *redirect_pkt){
+	int i = 0 ;
+	struct loop_arg18 arg18;
+	arg18.ev = ev;
+	arg18.redirect_pkt = redirect_pkt;
+	arg18.ctx = ctx;
+	arg18.i = i;
+	arg18.remove_counter = out->remove_counter;
+	bpf_loop(100, loop_function18, &arg18, 0);
+	ctx->num_SQ_list = ctx->num_SQ_list - out->remove_counter;
+}
+
+static __always_inline void RemoveSQProcessor_net_event(struct net_event *ev, struct context *ctx, struct interm_out *out, struct xdp_md *redirect_pkt)
+{
+	__u32 remove_counter = 0;
+	__u32 i = 0 ;
+	struct loop_arg16 arg16;
+	arg16.ev = ev;
+	arg16.ctx = ctx;
+	arg16.i = i;
+	arg16.remove_counter = remove_counter;
+	bpf_loop(100, loop_function16, &arg16, 0);
+	i = 0 ;
+
+	remove_counter = arg16.remove_counter;
+
+	struct loop_arg17 arg17;
+	arg17.ctx = ctx;
+	arg17.i = i;
+	arg17.out = out;
+	bpf_loop(100, loop_function17, &arg17, 0);
+	ctx->num_sent_packets = ctx->num_sent_packets - out->pkt_counter;
+
+	bpf_printk("%d", ctx->num_sent_packets);
+	//i = 0 ;
+
+	//out->remove_counter = remove_counter;
+	/*struct loop_arg18 arg18;
+	arg18.ev = ev;
+	arg18.redirect_pkt = redirect_pkt;
+	arg18.ctx = ctx;
+	arg18.i = i;
+	arg18.remove_counter = remove_counter;
+	bpf_loop(100, loop_function18, &arg18, 0);
+	ctx->num_SQ_list = ctx->num_SQ_list - remove_counter;*/
+}
+/*
+static __always_inline void CnpCheckProcessor_net_event(struct net_event *ev, struct context *ctx, struct interm_out *out, struct xdp_md *redirect_pkt)
+{
+	if( ev->ecn )
+	{
+		ctx->ecn_found_counter = ctx->ecn_found_counter + 1;
+		struct net_metadata pkt_ev;
 		pkt_ev.type_metadata = IS_NET_METADATA;
+		pkt_ev.length = 0;
+		struct BTHeader bth = {};
+		bth.opcode = 129;
+		bth.ack_req = 0;
+		bth.dest_qp = ev->qp_id;
+		bth.psn = 0;
+		struct UDPHeader udp = {};
+		udp.src_port = ctx->src_port;
+		udp.dst_port = ctx->dst_port;
+		udp.length = 8 + sizeof( bth );
+		pkt_ev.udp = udp;
+		pkt_ev.bth = bth;
+		pkt_ev.hdr_combination = 0;
 		if((void *)(long)redirect_pkt->data + sizeof(struct metadata_hdr) > (void *)(long)redirect_pkt->data_end) {
 			return;
 		}struct metadata_hdr *meta_hdr = (struct metadata_hdr *)(long)redirect_pkt->data;
@@ -2075,9 +2395,171 @@ static __always_inline void AtomicAckProcessor(struct prog_event *ev, struct con
 			return;
 		}__builtin_memcpy((void *)(long)redirect_pkt->data + (meta_hdr->metadata_end), &pkt_ev, sizeof(pkt_ev));
 		meta_hdr->metadata_end += sizeof(pkt_ev);
+		struct app_metadata fb_new_event;
+		fb_new_event.type_metadata = IS_APP_METADATA;
+		fb_new_event.write_to_mem = 0;
+		fb_new_event.fb_type = 0;
+		fb_new_event.bytes = ev->data_len;
+		if((void *)(long)redirect_pkt->data + sizeof(struct metadata_hdr) > (void *)(long)redirect_pkt->data_end) {
+			return;
+		}meta_hdr = (struct metadata_hdr *)(long)redirect_pkt->data;
+		if(meta_hdr->metadata_end > 4000) {
+			return;
+		}if((void *)(long)redirect_pkt->data + (meta_hdr->metadata_end) + sizeof(fb_new_event) > (void *)(long)redirect_pkt->data_end) {
+			return;
+		}__builtin_memcpy((void *)(long)redirect_pkt->data + (meta_hdr->metadata_end), &fb_new_event, sizeof(fb_new_event));
+		meta_hdr->metadata_end += sizeof(fb_new_event);
+		struct timer_event new_event;
+		new_event.ev_flow_id = ev->ev_flow_id;
+		new_event.event_type = CNP_CHECK;
+		new_event.qp_id = ev->qp_id;
+		ctx->timer_cnp.duration = 1000 * 50;
+		initialize_timer( new_event , ctx->timer_cnp.duration , timer_cnp );
+		ctx->ecn_found_counter = 0;
+	}
+	
+	return;
+}
+static __always_inline void CnpRepeatProcessor(struct timer_event *ev, struct context *ctx, struct interm_out *out, struct xdp_md *redirect_pkt)
+{
+	if( ctx->ecn_found_counter > 0 )
+	{
+		struct net_metadata pkt_ev;
+		pkt_ev.type_metadata = IS_NET_METADATA;
+		pkt_ev.length = 0;
+		struct BTHeader bth = {};
+		bth.opcode = 129;
+		bth.ack_req = 0;
+		bth.dest_qp = ev->qp_id;
+		bth.psn = 0;
+		struct UDPHeader udp = {};
+		udp.src_port = ctx->src_port;
+		udp.dst_port = ctx->dst_port;
+		udp.length = 8 + sizeof( bth );
+		pkt_ev.udp = udp;
+		pkt_ev.bth = bth;
+		pkt_ev.hdr_combination = 0;
+		if((void *)(long)redirect_pkt->data + sizeof(struct metadata_hdr) > (void *)(long)redirect_pkt->data_end) {
+			return;
+		}struct metadata_hdr *meta_hdr = (struct metadata_hdr *)(long)redirect_pkt->data;
+		if(meta_hdr->metadata_end > 4000) {
+			return;
+		}if((void *)(long)redirect_pkt->data + (meta_hdr->metadata_end) + sizeof(pkt_ev) > (void *)(long)redirect_pkt->data_end) {
+			return;
+		}__builtin_memcpy((void *)(long)redirect_pkt->data + (meta_hdr->metadata_end), &pkt_ev, sizeof(pkt_ev));
+		meta_hdr->metadata_end += sizeof(pkt_ev);
+		restart_timer( ev->ev_flow_id , ctx->timer_cnp.duration , timer_cnp );
+	}
+	else
+	{
+		cancel_timer( ev->ev_flow_id , timer_cnp );
+	}
+	
+	return;
+}
+static __always_inline void CnpRateProcessor(struct net_event *ev, struct context *ctx, struct interm_out *out, struct xdp_md *redirect_pkt)
+{
+	__u32 Rc = ctx->Rc;
+	__u32 alpha = ctx->alpha;
+	ctx->Rt = Rc;
+	ctx->Rc = Rc * ( 1 - alpha / 2 );
+	ctx->alpha = ( 1 - 1 / 16 ) * alpha + 1 / 16;
+	restart_timer( ev->ev_flow_id , ctx->timer_alpha.duration , timer_alpha );
+}
+static __always_inline void AlphaCheckProcessor(struct timer_event *ev, struct context *ctx, struct interm_out *out, struct xdp_md *redirect_pkt)
+{
+	__u32 alpha = ctx->alpha;
+	ctx->alpha = ( 1 - 1 / 16 ) * alpha;
+	restart_timer( ev->ev_flow_id , ctx->timer_alpha.duration , timer_alpha );
+}
+static __always_inline void DcqcnTimerProcessor(struct timer_event *ev, struct context *ctx, struct interm_out *out, struct xdp_md *redirect_pkt)
+{
+	ctx->T1 = ctx->T1 + 1;
+	struct prog_event new_event;
+	new_event.ev_flow_id = ev->ev_flow_id;
+	new_event.event_type = DCQCN_INCREASE;
+	new_event.qp_id = ev->qp_id;
+	generic_event_enqueue( & new_event , PROG_EVENT );
+	restart_timer( ev->ev_flow_id , ctx->timer_DCQCN_counter.duration , timer_DCQCN_counter );
+}
+static __always_inline void DcqcnIncreaseProcessor(struct prog_event *ev, struct context *ctx, struct interm_out *out, struct xdp_md *redirect_pkt)
+{
+	__u32 maximum = 0;
+	__u32 minimum = 0;
+	if( ctx->T1 > ctx->BC )
+	{
+		maximum = ctx->T1;
+		minimum = ctx->BC;
+	}
+	else
+	{
+		if( ctx->T1 < ctx->BC )
+		{
+			maximum = ctx->BC;
+			minimum = ctx->T1;
+		}
+		else
+		{
+			maximum = ctx->BC;
+			minimum = maximum;
+		}
+		
+	}
+	
+	if( maximum < ctx->F )
+	{
+		ctx->Rc = ( ctx->Rt + ctx->Rc ) / 2;
+	}
+	else
+	{
+		if( minimum > ctx->F )
+		{
+			ctx->Rt = ctx->Rai * ( minimum - ctx->F + 1 );
+			ctx->Rc = ( ctx->Rt + ctx->Rc ) / 2;
+		}
+		else
+		{
+			ctx->Rt = ctx->Rt + ctx->Rai;
+			ctx->Rc = ( ctx->Rt + ctx->Rc ) / 2;
+		}
+		
+	}
+	
+	struct net_metadata new_event;
+	new_event.type_metadata = IS_NET_METADATA;
+	new_event.Rc = ctx->Rc;
+	if((void *)(long)redirect_pkt->data + sizeof(struct metadata_hdr) > (void *)(long)redirect_pkt->data_end) {
+		return;
+	}struct metadata_hdr *meta_hdr = (struct metadata_hdr *)(long)redirect_pkt->data;
+	if(meta_hdr->metadata_end > 4000) {
+		return;
+	}if((void *)(long)redirect_pkt->data + (meta_hdr->metadata_end) + sizeof(new_event) > (void *)(long)redirect_pkt->data_end) {
+		return;
+	}__builtin_memcpy((void *)(long)redirect_pkt->data + (meta_hdr->metadata_end), &new_event, sizeof(new_event));
+	meta_hdr->metadata_end += sizeof(new_event);
+	return;
+}*/
+
+static __always_inline void MissAckProcessor(struct timer_event *ev, struct context *ctx, struct interm_out *out, struct xdp_md *redirect_pkt)
+{
+	if( ctx->num_sent_packets > 0 )
+	{
+		if(0 >= 500){
+			return;
+		}//struct net_metadata pkt_ev = ctx->sent_packets[ 0 ].pkt_ev;
+		//pkt_ev.type_metadata = IS_NET_METADATA;
+		if((void *)(long)redirect_pkt->data + sizeof(struct metadata_hdr) > (void *)(long)redirect_pkt->data_end) {
+			return;
+		}struct metadata_hdr *meta_hdr = (struct metadata_hdr *)(long)redirect_pkt->data;
+		if(meta_hdr->metadata_end > 4000) {
+			return;
+		}if((void *)(long)redirect_pkt->data + (meta_hdr->metadata_end) + sizeof(struct net_metadata) > (void *)(long)redirect_pkt->data_end) {
+			return;
+		}__builtin_memcpy((void *)(long)redirect_pkt->data + (meta_hdr->metadata_end), &(ctx->sent_packets[ 0 ].pkt_ev), sizeof(struct net_metadata));
+		meta_hdr->metadata_end += sizeof(struct net_metadata);
 		restart_timer( ev->ev_flow_id , ctx->timer_ack_timeout.duration , timer_ack_timeout );
 	}	
-}*/
+}
 
 static __always_inline void app_event_dispatcher(struct app_event* event,
 struct context *ctx, struct xdp_md *redirect_pkt) {
@@ -2102,6 +2584,7 @@ struct context *ctx, struct xdp_md *redirect_pkt) {
 	case WRITE_WQE:
 		WriteProcessor(event, ctx, &inter_output, redirect_pkt);
 		TransmitProcessor_app_event(event, ctx, &inter_output, redirect_pkt);
+		initACKTimerProcessor_app_event(event, ctx, &inter_output, redirect_pkt);
 		break;
 	default:
 		break;
@@ -2113,8 +2596,9 @@ struct context *ctx, struct xdp_md *redirect_pkt) {
 	switch (event->event_type)
 	{
 	case ACK:
-		//AckProcessor(event, ctx, &inter_output, redirect_pkt);
-		//RemoveSQProcessor_net_event(event, ctx, &inter_output, redirect_pkt);
+		AckProcessor(event, ctx, &inter_output, redirect_pkt);
+		RemoveSQProcessor_net_event(event, ctx, &inter_output, redirect_pkt);
+		RemoveSQHelperProcessor(event, ctx, &inter_output, redirect_pkt);
 		break;
 	case ATOMIC_DATA:
 		//CnpCheckProcessor_net_event(event, ctx, &inter_output, redirect_pkt);
@@ -2135,8 +2619,6 @@ struct context *ctx, struct xdp_md *redirect_pkt) {
 	case READ_RESP_DATA:
 		//ReadRespProcessor(event, ctx, &inter_output, redirect_pkt);
 		//RemoveSQProcessor_net_event(event, ctx, &inter_output, redirect_pkt);
-		cancel_timer(5, 1);
-		restart_timer(1, 2, 3);
 		break;
 	case RECV_DATA:
 		//CnpCheckProcessor_net_event(event, ctx, &inter_output, redirect_pkt);
@@ -2152,7 +2634,7 @@ struct context *ctx, struct xdp_md *redirect_pkt) {
 }
 static __always_inline void timer_event_dispatcher(struct timer_event* event,
 struct context *ctx, struct xdp_md *redirect_pkt) {
-	//struct interm_out inter_output;
+	struct interm_out inter_output;
 	switch (event->event_type)
 	{
 	case ALPHA_CHECK:
@@ -2165,7 +2647,7 @@ struct context *ctx, struct xdp_md *redirect_pkt) {
 		//DcqcnTimerProcessor(event, ctx, &inter_output, redirect_pkt);
 		break;
 	case MISS_ACK:
-		//MissAckProcessor(event, ctx, &inter_output, redirect_pkt);
+		MissAckProcessor(event, ctx, &inter_output, redirect_pkt);
 		break;
 	default:
 		break;
@@ -2183,7 +2665,7 @@ struct context *ctx, struct xdp_md *redirect_pkt) {
 		//DcqcnIncreaseProcessor(event, ctx, &inter_output, redirect_pkt);
 		break;
 	case RESPONDER_EVENT:
-		//ResponderProcessor(event, ctx, &inter_output, redirect_pkt);
+		ResponderProcessor(event, ctx, &inter_output, redirect_pkt);
 		break;
 	case TRANSMIT_EVENT:
 		intermPSNProcessor(event, ctx, &inter_output, redirect_pkt);

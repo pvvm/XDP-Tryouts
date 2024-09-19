@@ -77,7 +77,8 @@ struct timer_data {
 struct interm_out
 {
 	__u32 psn;
-	__u32 pkt_counter;
+	__u8 pkt_counter; 
+	__u8 remove_counter;
 };
 struct APPHeader
 {
